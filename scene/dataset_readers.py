@@ -22,6 +22,7 @@ from pathlib import Path
 from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
+from utils.image_utils import load_image
 
 class CameraInfo(NamedTuple):
     uid: int
@@ -34,6 +35,7 @@ class CameraInfo(NamedTuple):
     image_name: str
     width: int
     height: int
+    joints: np.array
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -182,10 +184,13 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
     with open(os.path.join(path, transformsfile)) as json_file:
         contents = json.load(json_file)
         fovx = contents["camera_angle_x"]
+        # convert to radians
+        fovx = fovx * np.pi / 180.0
 
         frames = contents["frames"]
         for idx, frame in enumerate(frames):
             cam_name = os.path.join(path, frame["file_path"] + extension)
+
 
             # NeRF 'transform_matrix' is a camera-to-world transform
             c2w = np.array(frame["transform_matrix"])
@@ -199,22 +204,25 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
 
             image_path = os.path.join(path, cam_name)
             image_name = Path(cam_name).stem
+            # image = Image.open(image_path)
+            #
+            # im_data = np.array(image.convert("RGBA"))
+            #
+            # bg = np.array([1,1,1]) if white_background else np.array([0, 0, 0])
+            #
+            # norm_data = im_data / 255.0
+            # arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
+            # image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB")
             image = Image.open(image_path)
-
-            im_data = np.array(image.convert("RGBA"))
-
-            bg = np.array([1,1,1]) if white_background else np.array([0, 0, 0])
-
-            norm_data = im_data / 255.0
-            arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
-            image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB")
 
             fovy = focal2fov(fov2focal(fovx, image.size[0]), image.size[1])
             FovY = fovy 
             FovX = fovx
 
+            joints = np.array(frame["joint_pos"])
+
             cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                            image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1]))
+                            image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1], joints=joints))
             
     return cam_infos
 
