@@ -204,7 +204,7 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
 
             image_path = os.path.join(path, cam_name)
             image_name = Path(cam_name).stem
-            # image = Image.open(image_path)
+            image = load_image(image_path, white_background)
             #
             # im_data = np.array(image.convert("RGBA"))
             #
@@ -213,7 +213,7 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             # norm_data = im_data / 255.0
             # arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
             # image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB")
-            image = Image.open(image_path)
+            # image = load_image(image_path, white_background)
 
             fovy = focal2fov(fov2focal(fovx, image.size[0]), image.size[1])
             FovY = fovy 
@@ -241,7 +241,7 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
     ply_path = os.path.join(path, "points3d.ply")
     if not os.path.exists(ply_path):
         # Since this data set has no colmap data, we start with random points
-        num_pts = 100_000
+        num_pts = 50_000
         print(f"Generating random point cloud ({num_pts})...")
         
         # We create random points inside the bounds of the synthetic Blender scenes

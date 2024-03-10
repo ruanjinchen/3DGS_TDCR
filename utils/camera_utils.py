@@ -14,6 +14,7 @@ import numpy as np
 from utils.general_utils import PILtoTorch
 from utils.graphics_utils import fov2focal
 import torch
+import torchvision
 
 WARNED = False
 
@@ -39,16 +40,25 @@ def loadCam(args, id, cam_info, resolution_scale):
         scale = float(global_down) * float(resolution_scale)
         resolution = (int(orig_w / scale), int(orig_h / scale))
 
+
     resized_image_rgb = PILtoTorch(cam_info.image, resolution)
+
 
     gt_image = resized_image_rgb[:3, ...]
     loaded_mask = None
 
-    if resized_image_rgb.shape[1] == 4:
-        loaded_mask = resized_image_rgb[3:4, ...]
+    if resized_image_rgb.shape[0] == 4:
+        loaded_mask = resized_image_rgb[3:4, ...].squeeze(0)
+
+    # save loaded mask for debug
+    # torchvision.utils.save_image(loaded_mask, f"mask_{cam_info.image_name}.png")
 
     # joints to tensor
-    joints = torch.tensor(cam_info.joints, dtype=torch.float32)
+    joints = torch.tensor(cam_info.joints, dtype=torch.float32, device=args.data_device)
+    limit = args.joint_limit
+    limit = limit / 180 * np.pi
+    # normalize joints
+    joints = (joints + limit) / (2 * limit)
 
     return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY, 

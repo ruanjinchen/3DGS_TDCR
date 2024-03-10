@@ -14,14 +14,15 @@ import math
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
+from F_kinematic import GaussianDeformer
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):
+def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, deformer = None, render_mask =False):
     """
     Render the scene. 
     
     Background tensor (bg_color) must be on GPU!
     """
- 
+
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
     try:
@@ -51,6 +52,36 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
     means3D = pc.get_xyz
+    n_points = means3D.shape[0]
+    joints = viewpoint_camera.joints.cuda() # [num_joints]
+    fwd = None
+    if deformer is not None:
+        # batchify points
+        num_point_per_batch = deformer.num_point
+        num_batch = int(math.ceil(n_points / num_point_per_batch))
+        means3D_batch = torch.zeros(num_batch * num_point_per_batch, 3, device=means3D.device, dtype=means3D.dtype)
+        means3D_batch[:n_points] = means3D
+        means3D_batch = means3D_batch.view(num_batch, num_point_per_batch, 3)
+        # compute 16 batches at a time
+        batch_size = 8
+        if num_batch > 10000:
+            fwd_list = []
+            for i in range(0, num_batch, batch_size):
+                fwd_list.append(deformer(means3D_batch[i:i+batch_size], joints))
+                # torch.cuda.empty_cache()
+            fwd = torch.cat(fwd_list, dim=0)
+        else:
+            fwd = deformer(means3D_batch, joints)
+        # fwd: [num_batch, num_point_per_batch, 4, 4]
+        fwd = fwd.view(-1, 4, 4)
+        # only keep points' fwd
+        fwd = fwd[:n_points]
+        homo_coord = torch.ones(n_points, 1, dtype=means3D.dtype, device=means3D.device)
+        x_hat_homo = torch.cat([means3D, homo_coord], dim=-1).view(n_points, 4, 1)
+        x_bar = torch.matmul(fwd, x_hat_homo)[:, :3, 0]
+        means3D = x_bar
+
+
     means2D = screenspace_points
     opacity = pc.get_opacity
 
@@ -60,7 +91,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     rotations = None
     cov3D_precomp = None
     if pipe.compute_cov3D_python:
-        cov3D_precomp = pc.get_covariance(scaling_modifier)
+        cov3D_precomp = pc.get_covariance(scaling_modifier, fwd)
     else:
         scales = pc.get_scaling
         rotations = pc.get_rotation
@@ -72,7 +103,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     if override_color is None:
         if pipe.convert_SHs_python:
             shs_view = pc.get_features.transpose(1, 2).view(-1, 3, (pc.max_sh_degree+1)**2)
-            dir_pp = (pc.get_xyz - viewpoint_camera.camera_center.repeat(pc.get_features.shape[0], 1))
+            dir_pp = (means3D - viewpoint_camera.camera_center.repeat(pc.get_features.shape[0], 1))
             dir_pp_normalized = dir_pp/dir_pp.norm(dim=1, keepdim=True)
             sh2rgb = eval_sh(pc.active_sh_degree, shs_view, dir_pp_normalized)
             colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
@@ -92,9 +123,23 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         rotations = rotations,
         cov3D_precomp = cov3D_precomp)
 
+    if render_mask:
+        mask, _ = rasterizer(
+            means3D = means3D,
+            means2D = means2D,
+            shs = None,
+            colors_precomp = torch.ones(opacity.shape[0], 3, device=opacity.device),
+            opacities = opacity,
+            scales = scales,
+            rotations = rotations,
+            cov3D_precomp = cov3D_precomp
+        )
+        mask = mask[:1]
+
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
     return {"render": rendered_image,
             "viewspace_points": screenspace_points,
             "visibility_filter" : radii > 0,
-            "radii": radii}
+            "radii": radii,
+            "mask": mask if render_mask else None}

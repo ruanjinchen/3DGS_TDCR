@@ -24,9 +24,14 @@ from utils.general_utils import strip_symmetric, build_scaling_rotation
 class GaussianModel:
 
     def setup_functions(self):
-        def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
+        def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation, fwd = None):
             L = build_scaling_rotation(scaling_modifier * scaling, rotation)
             actual_covariance = L @ L.transpose(1, 2)
+            if fwd is not None:
+                # separate rotation from 4x4 matrix
+                fwd = fwd[:, :3, :3]
+                actual_covariance = fwd @ actual_covariance
+                actual_covariance = actual_covariance @ fwd.transpose(1, 2)
             symm = strip_symmetric(actual_covariance)
             return symm
         
@@ -114,8 +119,8 @@ class GaussianModel:
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
     
-    def get_covariance(self, scaling_modifier = 1):
-        return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
+    def get_covariance(self, scaling_modifier = 1, fwd = None):
+        return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation, fwd)
 
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
