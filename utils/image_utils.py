@@ -25,9 +25,16 @@ def load_image(image_path, white_background=False):
 
     im_data = np.array(image.convert("RGBA"))
 
-    bg = np.array([1, 1, 1]) if white_background else np.array([0, 0, 0])
 
+    bg = np.array([1, 1, 1]) if white_background else np.array([0, 0, 0])
+    #
     norm_data = im_data / 255.0
+
     arr = norm_data[:, :, :3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
-    image = Image.fromarray(np.array(arr * 255.0, dtype=np.byte), "RGB")
+    # reconstruct the image to rgba
+    arr = np.concatenate((arr, norm_data[:, :, 3:4]), axis=2)
+
+    image = Image.fromarray(np.array(arr * 255.0, dtype=np.byte), "RGBA")
+
+
     return image
