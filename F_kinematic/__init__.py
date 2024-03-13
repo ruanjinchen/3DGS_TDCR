@@ -91,62 +91,118 @@ class RigidTransform(nn.Module):
         return transformation
 
 
+# class GaussianDeformer(nn.Module):
+#     def __init__(self, num_joints, hidden_dim=128, num_layers=2, encoding=20, rotation_representation="quat"):
+#         super(GaussianDeformer, self).__init__()
+#         self.rigid = RigidTransform(num_joints, hidden_dim, num_layers, encoding, rotation_representation)
+#         self.num_joints = num_joints
+#         # manually create cfg for PointTransformerSeg
+#         class Config:
+#             def __init__(self, num_point, num_class, input_dim):
+#                 self.num_point = num_point
+#                 self.model = self
+#                 self.nblocks = 4
+#                 self.nneighbor = 16
+#                 self.num_class = num_class
+#                 self.input_dim = input_dim
+#                 self.transformer_dim = 128
+#
+#         self.num_point = 1024
+#         num_class_for_pt = num_joints + 1
+#         input_dim_for_pt = 3 + 1
+#         cfg = Config(self.num_point, num_class_for_pt, input_dim_for_pt)
+#         self.point_transformer = PointTransformerSeg(cfg)
+#         self.optimizer_rigid, self.scheduler = None, None
+#         self.optimizer_pt = None
+#         # self.set_optimizer()
+#
+#     def set_optimizer(self, max_iter):
+#         self.optimizer_rigid = torch.optim.Adam(self.rigid.parameters(), lr=1e-3, eps=1e-8)
+#         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer_rigid, step_size=1000, gamma=0.5)
+#         self.optimizer_pt = torch.optim.Adam(self.point_transformer.parameters(), lr=1e-3, eps=1e-8, betas=(0.9, 0.999), weight_decay=1e-4)
+#
+#
+#     def forward(self, points, joints):
+#         # points: [batch_size, num_point, 3]
+#         batch_size = points.size(0)
+#         transformation = self.rigid(joints)
+#         # transformation: [num_joints + 1, 4, 4]
+#         # create input for point transformer
+#         pt_input = torch.cat([points, torch.ones((points.size(0), points.size(1), 1), device=points.device)], dim=-1)
+#         weights = self.point_transformer(pt_input)
+#
+#         # weights: [batch_size, num_point, num_joints + 1]
+#         weights = F.softmax(weights, dim=-1)
+#         weights = weights.view(batch_size * self.num_point, -1)
+#         # fwd = torch.matmul(weights, transformation.view(-1, 16)).view(-1, 4, 4)
+#         # # fwd: [batch_size * num_point, 4, 4]
+#         # fwd = fwd.reshape(batch_size, -1, 4, 4)
+#         belongs = torch.argmax(weights, dim=-1)
+#         fwd = transformation[None, :, :, :].repeat(batch_size * self.num_point, 1, 1, 1)
+#         # choose the corresponding transformation for each point
+#         fwd = fwd[torch.arange(batch_size * self.num_point), belongs]
+#         fwd = fwd.view(batch_size, -1, 4, 4)
+#         return fwd
+#
+#     def optimize(self):
+#         self.optimizer_rigid.step()
+#         self.scheduler.step()
+#         self.optimizer_pt.step()
+#         self.optimizer_rigid.zero_grad()
+#         self.optimizer_pt.zero_grad()
+
 class GaussianDeformer(nn.Module):
     def __init__(self, num_joints, hidden_dim=128, num_layers=2, encoding=20, rotation_representation="quat"):
         super(GaussianDeformer, self).__init__()
         self.rigid = RigidTransform(num_joints, hidden_dim, num_layers, encoding, rotation_representation)
         self.num_joints = num_joints
-        # manually create cfg for PointTransformerSeg
-        class Config:
-            def __init__(self, num_point, num_class, input_dim):
-                self.num_point = num_point
-                self.model = self
-                self.nblocks = 4
-                self.nneighbor = 16
-                self.num_class = num_class
-                self.input_dim = input_dim
-                self.transformer_dim = 128
-
-        self.num_point = 1024
-        num_class_for_pt = num_joints + 1
-        input_dim_for_pt = 3 + 1
-        cfg = Config(self.num_point, num_class_for_pt, input_dim_for_pt)
-        self.point_transformer = PointTransformerSeg(cfg)
         self.optimizer_rigid, self.scheduler = None, None
-        self.optimizer_pt = None
-        # self.set_optimizer()
+        self.scale_mlp = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, 3 * (num_joints + 1)),
+        )
+        self.bone_parameters = nn.Parameter(torch.zeros((num_joints + 1, hidden_dim), dtype=torch.float, device='cuda'))
+        self.point_embedding = pos_encoding.FixedPositionalEncoding(20)
+        self.point_input_dim = 3 + 3 * 20
+        self.mini_opacity = nn.Sequential(
+            nn.Linear(self.point_input_dim + hidden_dim, 2 * hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(2 * hidden_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, 1),
+        )
 
     def set_optimizer(self, max_iter):
         self.optimizer_rigid = torch.optim.Adam(self.rigid.parameters(), lr=1e-3, eps=1e-8)
-        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer_rigid, step_size=1000, gamma=0.5)
-        self.optimizer_pt = torch.optim.Adam(self.point_transformer.parameters(), lr=1e-3, eps=1e-8, betas=(0.9, 0.999), weight_decay=1e-4)
+        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer_rigid, step_size=1000, gamma=0.95)
 
 
     def forward(self, points, joints):
-        # points: [batch_size, num_point, 3]
-        batch_size = points.size(0)
-        transformation = self.rigid(joints)
-        # transformation: [num_joints + 1, 4, 4]
-        # create input for point transformer
-        pt_input = torch.cat([points, torch.ones((points.size(0), points.size(1), 1), device=points.device)], dim=-1)
-        weights = self.point_transformer(pt_input)
-
-        # weights: [batch_size, num_point, num_joints + 1]
+        # points: [num_point, 3]
+        # joints: [num_joints]
+        n_points = points.size(0)
+        transformation = self.rigid(joints) # [num_joints + 1, 4, 4]
+        weights = []
+        for i in range(self.num_joints + 1):
+            points_embed = self.point_embedding(points)
+            f = torch.cat([points_embed, self.bone_parameters[i][None, :].repeat(n_points, 1)], dim=-1)
+            f = self.mini_opacity(f)
+            weights.append(f)
+        weights = torch.cat(weights, dim=-1)
         weights = F.softmax(weights, dim=-1)
-        weights = weights.view(batch_size * self.num_point, -1)
-        # fwd = torch.matmul(weights, transformation.view(-1, 16)).view(-1, 4, 4)
-        # # fwd: [batch_size * num_point, 4, 4]
-        # fwd = fwd.reshape(batch_size, -1, 4, 4)
-        belongs = torch.argmax(weights, dim=-1)
-        fwd = transformation[None, :, :, :].repeat(batch_size * self.num_point, 1, 1, 1)
+        weights = weights.view(-1, self.num_joints + 1)
+        max_weights, max_indices = torch.max(weights, dim=-1)
+        fwd = transformation[None, :, :, :].repeat(n_points, 1, 1, 1)
         # choose the corresponding transformation for each point
-        fwd = fwd[torch.arange(batch_size * self.num_point), belongs]
-        fwd = fwd.view(batch_size, -1, 4, 4)
+        fwd = fwd[torch.arange(n_points), max_indices]
+        fwd = fwd.view(n_points, 4, 4)
         return fwd
+
 
     def optimize(self):
         self.optimizer_rigid.step()
         self.scheduler.step()
-        self.optimizer_pt.step()
         self.optimizer_rigid.zero_grad()
-        self.optimizer_pt.zero_grad()
