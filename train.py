@@ -18,7 +18,8 @@ import torchvision
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
 import sys
-from scene import Scene, GaussianModel
+from scene import Scene
+from scene.gaussian_model import GaussianModel
 from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm
@@ -47,7 +48,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         gaussians.restore(model_params, opt)
         transform.load_state_dict(transform_params)
         transform.optimizer_rigid.load_state_dict(transform_opt_params)
-        transform.optimizer_pt.load_state_dict(transform_pt_opt_params)
+        # transform.optimizer_pt.load_state_dict(transform_pt_opt_params)
         transform.scheduler.load_state_dict(transform_sch_params)
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
@@ -160,7 +161,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 torch.save((gaussians.capture(),
                             transform.state_dict(),
                             transform.optimizer_rigid.state_dict(),
-                            transform.optimizer_pt.state_dict(),
+                            # transform.optimizer_pt.state_dict(),
                             transform.scheduler.state_dict(),
                             iteration), scene.model_path + "/chkpnt_" + str(iteration) + ".pth")
                 if iteration >= 8000 and not iteration - 1000 in checkpoint_iterations:

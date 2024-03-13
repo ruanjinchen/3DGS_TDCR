@@ -16,7 +16,7 @@ from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 from F_kinematic import GaussianDeformer
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, deformer = None, render_mask =False):
+def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, deformer = None, render_mask = False):
     """
     Render the scene. 
     
@@ -55,35 +55,41 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     n_points = means3D.shape[0]
     joints = viewpoint_camera.joints.cuda() # [num_joints]
     fwd = None
+    means2D = screenspace_points
+    opacity = pc.get_opacity
+    # if deformer is not None:
+    #     # batchify points
+    #     num_point_per_batch = deformer.num_point
+    #     num_batch = int(math.ceil(n_points / num_point_per_batch))
+    #     means3D_batch = torch.zeros(num_batch * num_point_per_batch, 3, device=means3D.device, dtype=means3D.dtype)
+    #     means3D_batch[:n_points] = means3D
+    #     means3D_batch = means3D_batch.view(num_batch, num_point_per_batch, 3)
+    #     # compute 16 batches at a time
+    #     batch_size = 8
+    #     if num_batch > 10000:
+    #         fwd_list = []
+    #         for i in range(0, num_batch, batch_size):
+    #             fwd_list.append(deformer(means3D_batch[i:i+batch_size], joints))
+    #             # torch.cuda.empty_cache()
+    #         fwd = torch.cat(fwd_list, dim=0)
+    #     else:
+    #         fwd = deformer(means3D_batch, joints)
+    #     # fwd: [num_batch, num_point_per_batch, 4, 4]
+    #     fwd = fwd.view(-1, 4, 4)
+    #     # only keep points' fwd
+    #     fwd = fwd[:n_points]
+    #     homo_coord = torch.ones(n_points, 1, dtype=means3D.dtype, device=means3D.device)
+    #     x_hat_homo = torch.cat([means3D, homo_coord], dim=-1).view(n_points, 4, 1)
+    #     x_bar = torch.matmul(fwd, x_hat_homo)[:, :3, 0]
+    #     means3D = x_bar
+    deformer = None
     if deformer is not None:
-        # batchify points
-        num_point_per_batch = deformer.num_point
-        num_batch = int(math.ceil(n_points / num_point_per_batch))
-        means3D_batch = torch.zeros(num_batch * num_point_per_batch, 3, device=means3D.device, dtype=means3D.dtype)
-        means3D_batch[:n_points] = means3D
-        means3D_batch = means3D_batch.view(num_batch, num_point_per_batch, 3)
-        # compute 16 batches at a time
-        batch_size = 8
-        if num_batch > 10000:
-            fwd_list = []
-            for i in range(0, num_batch, batch_size):
-                fwd_list.append(deformer(means3D_batch[i:i+batch_size], joints))
-                # torch.cuda.empty_cache()
-            fwd = torch.cat(fwd_list, dim=0)
-        else:
-            fwd = deformer(means3D_batch, joints)
-        # fwd: [num_batch, num_point_per_batch, 4, 4]
-        fwd = fwd.view(-1, 4, 4)
-        # only keep points' fwd
-        fwd = fwd[:n_points]
+        fwd = deformer(means3D, joints)
         homo_coord = torch.ones(n_points, 1, dtype=means3D.dtype, device=means3D.device)
         x_hat_homo = torch.cat([means3D, homo_coord], dim=-1).view(n_points, 4, 1)
         x_bar = torch.matmul(fwd, x_hat_homo)[:, :3, 0]
         means3D = x_bar
 
-
-    means2D = screenspace_points
-    opacity = pc.get_opacity
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
     # scaling / rotation by the rasterizer.
@@ -142,4 +148,5 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             "viewspace_points": screenspace_points,
             "visibility_filter" : radii > 0,
             "radii": radii,
-            "mask": mask if render_mask else None}
+            "mask": mask if render_mask else None,
+            }
