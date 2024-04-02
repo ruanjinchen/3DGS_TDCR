@@ -55,7 +55,8 @@ class ModelParams(ParamGroup):
         self.data_device = "cpu"
         self.eval = False
         self._joints = 7
-        self.joint_limit = 80
+        self.joint_limit = 90
+        self.size = [400, 400]
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -72,7 +73,7 @@ class PipelineParams(ParamGroup):
 
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
-        self.iterations = 60_000
+        self.iterations = 300_000
         self.position_lr_init = 0.00016
         self.position_lr_final = 0.0000016
         self.position_lr_delay_mult = 0.01
@@ -84,7 +85,8 @@ class OptimizationParams(ParamGroup):
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2
         self.lambda_mask = 0.0
-        self.lambda_coarse = 0.0
+        self.lambda_aiap_xyz = 1
+        self.lambda_aiap_cov = 100
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500

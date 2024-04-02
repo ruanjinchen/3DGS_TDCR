@@ -22,8 +22,9 @@ from arguments import ModelParams, PipelineParams, get_combined_args
 from gaussian_renderer import GaussianModel
 from F_kinematic import GaussianDeformer
 from utils.system_utils import searchForMaxIteration
+from utils.camera_utils import camera_from_camInfo
 
-def render_set(model_path, name, iteration, views, gaussians, pipeline, background, deformer):
+def render_set(model_path, name, iteration, views, gaussians, pipeline, background, deformer, dataset):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
     mask_path = os.path.join(model_path, name, "ours_{}".format(iteration), "masks")
@@ -33,6 +34,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     makedirs(mask_path, exist_ok=True)
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
+        view = camera_from_camInfo(view, 1.0, dataset)
         results = render(view, gaussians, pipeline, background, deformer=deformer, render_mask=True)
         rendering, mask= results["render"], results["mask"]
         gt = view.original_image[0:3, :, :]
@@ -46,7 +48,7 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
     with torch.no_grad():
         gaussians = GaussianModel(dataset.sh_degree)
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
-        deformer = GaussianDeformer(dataset.joints)
+        deformer = GaussianDeformer(dataset.joints, use_mlp=True)
         deformer.cuda()
         # if iteration == -1:
         #     it = searchForMaxIteration(dataset.model_path)
@@ -54,16 +56,16 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
         path = dataset.model_path + "/chkpnt_" + str(scene.loaded_iter) + ".pth"
         (model_params, transform_params, transform_opt_params, transform_sch_params, first_iter) = torch.load(
             path)
-        deformer.load_state_dict(transform_params)
+        deformer.load(transform_params)
 
         bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
         if not skip_train:
-             render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, deformer)
+            render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, deformer, dataset)
 
         if not skip_test:
-             render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background, deformer)
+             render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background, deformer, dataset)
 
 if __name__ == "__main__":
     # Set up command line argument parser
