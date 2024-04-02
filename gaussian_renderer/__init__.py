@@ -16,7 +16,7 @@ from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 from F_kinematic import GaussianDeformer
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, deformer = None, render_mask = False):
+def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, deformer : GaussianDeformer = None, render_mask = False):
     """
     Render the scene. 
     
@@ -82,13 +82,11 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     #     x_hat_homo = torch.cat([means3D, homo_coord], dim=-1).view(n_points, 4, 1)
     #     x_bar = torch.matmul(fwd, x_hat_homo)[:, :3, 0]
     #     means3D = x_bar
-    deformer = None
+
     if deformer is not None:
-        fwd = deformer(means3D, joints)
-        homo_coord = torch.ones(n_points, 1, dtype=means3D.dtype, device=means3D.device)
-        x_hat_homo = torch.cat([means3D, homo_coord], dim=-1).view(n_points, 4, 1)
-        x_bar = torch.matmul(fwd, x_hat_homo)[:, :3, 0]
-        means3D = x_bar
+        xyz_can = means3D
+        means3D, fwd, center_transformed = deformer(means3D, joints)
+        xyz_obs = means3D
 
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
@@ -98,6 +96,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     cov3D_precomp = None
     if pipe.compute_cov3D_python:
         cov3D_precomp = pc.get_covariance(scaling_modifier, fwd)
+        cov3D_con = pc.get_covariance(scaling_modifier, None)
     else:
         scales = pc.get_scaling
         rotations = pc.get_rotation
@@ -149,4 +148,12 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             "visibility_filter" : radii > 0,
             "radii": radii,
             "mask": mask if render_mask else None,
-            }
+            "xyz_can": xyz_can if deformer is not None else None,
+            "xyz_obs": xyz_obs if deformer is not None else None,
+            "cov_can": cov3D_con if pipe.compute_cov3D_python else None,
+            "cov_obs": cov3D_precomp if pipe.compute_cov3D_python else None,
+            "center_can": deformer.ellipsoid_center_point if deformer is not None else None,
+            "center_obs": center_transformed if deformer is not None else None,
+            "e_radii":deformer.ellipsoid_radii if deformer is not None else None,
+            "rotations": fwd[:, :3, :3] if deformer is not None else None,}
+

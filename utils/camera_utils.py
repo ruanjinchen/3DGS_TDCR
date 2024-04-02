@@ -15,11 +15,12 @@ from utils.general_utils import PILtoTorch
 from utils.graphics_utils import fov2focal
 import torch
 import torchvision
+from utils.image_utils import load_image
 
 WARNED = False
 
 def loadCam(args, id, cam_info, resolution_scale):
-    orig_w, orig_h = cam_info.image.size
+    orig_w, orig_h = cam_info.width, cam_info.height
 
     if args.resolution in [1, 2, 4, 8]:
         resolution = round(orig_w/(resolution_scale * args.resolution)), round(orig_h/(resolution_scale * args.resolution))
@@ -40,8 +41,12 @@ def loadCam(args, id, cam_info, resolution_scale):
         scale = float(global_down) * float(resolution_scale)
         resolution = (int(orig_w / scale), int(orig_h / scale))
 
-
-    resized_image_rgb = PILtoTorch(cam_info.image, resolution)
+    if cam_info.image is None:
+        image_path = cam_info.image_path
+        image = load_image(image_path)
+    else:
+        image = cam_info.image
+    resized_image_rgb = PILtoTorch(image, resolution)
 
 
     gt_image = resized_image_rgb[:3, ...]
@@ -72,6 +77,9 @@ def cameraList_from_camInfos(cam_infos, resolution_scale, args):
         camera_list.append(loadCam(args, id, c, resolution_scale))
 
     return camera_list
+
+def camera_from_camInfo(cam_info, resolution_scale, args):
+    return loadCam(args, cam_info.uid, cam_info, resolution_scale)
 
 def camera_to_JSON(id, camera : Camera):
     Rt = np.zeros((4, 4))

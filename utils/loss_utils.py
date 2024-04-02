@@ -13,6 +13,7 @@ import torch
 import torch.nn.functional as F
 from torch.autograd import Variable
 from math import exp
+from pytorch3d.ops.knn import knn_points
 
 def l1_loss(network_output, gt):
     return torch.abs((network_output - gt)).mean()
@@ -62,3 +63,42 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
     else:
         return ssim_map.mean(1).mean(1).mean(1)
 
+
+def aiap_loss(xyz_can, xyz_obs, cov_can, cov_obs, n_neighbors=21):
+    _, index, _ = knn_points(xyz_can.unsqueeze(0), xyz_can.unsqueeze(0), K=n_neighbors, return_sorted=True)
+    index = index.squeeze(0)
+    return _aiap_loss(xyz_can, xyz_obs, index=index), _aiap_loss(cov_can, cov_obs, index=index)
+
+def _aiap_loss(x_canonical, x_deformed, n_neighbors=6, index=None):
+    if index is None:
+        _, index, _ = knn_points(x_canonical.unsqueeze(0), x_canonical.unsqueeze(0), K=n_neighbors, return_sorted=True)
+        index = index.squeeze(0)
+    dists_canonical = torch.cdist(x_canonical.unsqueeze(1), x_canonical[index])[:,0,1:]
+    dists_deformed = torch.cdist(x_deformed.unsqueeze(1), x_deformed[index])[:,0,1:]
+    return F.l1_loss(dists_canonical, dists_deformed)
+
+def center_loss(center_can, xyz_can, center_obs, xyz_obs, e_radii, n_neighbors=10):
+    # k = max(n_neighbors, int(xyz_can.size(0)/40))
+    k = 10
+    _, index, _ = knn_points(center_can.unsqueeze(0), xyz_can.unsqueeze(0), K=k, return_sorted=True)
+    index = index.squeeze(0)
+
+    return _center_loss(center_can, xyz_can, center_obs, xyz_obs, index=index)
+
+def _center_loss(center_can, xyz_can, center_obs, xyz_obs, n_neighbors=11, index=None):
+    if index is None:
+        _, index, _ = knn_points(center_can.unsqueeze(0), xyz_can.unsqueeze(0), K=n_neighbors, return_sorted=True)
+        index = index.squeeze(0)
+    dists_canonical = torch.cdist(center_can.unsqueeze(1), xyz_can[index])[:,0,:]
+    dists_deformed = torch.cdist(center_obs.unsqueeze(1), xyz_obs[index])[:,0,:]
+
+    return F.l1_loss(dists_canonical, dists_deformed)
+
+def rig_loss(rotations):
+    return _rig_loss(rotations)
+
+def _rig_loss(rotations):
+    # do svd on the rotation matrices
+    U, _, V = torch.svd(rotations)
+    loss = l1_loss(rotations, U @ V.transpose(-1, -2))
+    return loss
