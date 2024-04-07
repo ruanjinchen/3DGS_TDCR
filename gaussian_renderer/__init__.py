@@ -85,7 +85,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
 
     if deformer is not None:
         xyz_can = means3D
-        means3D, fwd, center_transformed = deformer(means3D, joints)
+        means3D, fwd, center_transformed, cycle_loss = deformer(means3D, joints)
         xyz_obs = means3D
 
 
@@ -95,11 +95,13 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     rotations = None
     cov3D_precomp = None
     if pipe.compute_cov3D_python:
-        cov3D_precomp = pc.get_covariance(scaling_modifier, fwd)
-        cov3D_con = pc.get_covariance(scaling_modifier, None)
+        cov3D_precomp, rotation_can, rotation_obs = pc.get_covariance(scaling_modifier, fwd)
+        cov3D_can, _, _ = pc.get_covariance(scaling_modifier, None)
     else:
         scales = pc.get_scaling
         rotations = pc.get_rotation
+
+
 
     # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
     # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
@@ -150,10 +152,12 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             "mask": mask if render_mask else None,
             "xyz_can": xyz_can if deformer is not None else None,
             "xyz_obs": xyz_obs if deformer is not None else None,
-            "cov_can": cov3D_con if pipe.compute_cov3D_python else None,
+            "cov_can": cov3D_can if pipe.compute_cov3D_python else None,
             "cov_obs": cov3D_precomp if pipe.compute_cov3D_python else None,
             "center_can": deformer.ellipsoid_center_point if deformer is not None else None,
             "center_obs": center_transformed if deformer is not None else None,
             "e_radii":deformer.ellipsoid_radii if deformer is not None else None,
-            "rotations": fwd[:, :3, :3] if deformer is not None else None,}
+            "rotation_can": rotation_can if deformer is not None else None,
+            "rotation_obs": rotation_obs if deformer is not None else None,
+            "cycle_loss": cycle_loss if deformer is not None else None}
 
