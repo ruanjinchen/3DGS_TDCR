@@ -48,7 +48,7 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
     with torch.no_grad():
         gaussians = GaussianModel(dataset.sh_degree)
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
-        deformer = GaussianDeformer(dataset.joints, use_mlp=True)
+        deformer = GaussianDeformer(dataset.joints, use_mlp=False)
         deformer.cuda()
         # if iteration == -1:
         #     it = searchForMaxIteration(dataset.model_path)
@@ -72,7 +72,7 @@ if __name__ == "__main__":
     parser = ArgumentParser(description="Testing script parameters")
     model = ModelParams(parser, sentinel=True)
     pipeline = PipelineParams(parser)
-    parser.add_argument("--iteration", default=7000, type=int)
+    parser.add_argument("--iteration", default=30000, type=int)
     parser.add_argument("--skip_train", action="store_true")
     parser.add_argument("--skip_test", action="store_true")
     parser.add_argument("--quiet", action="store_true")

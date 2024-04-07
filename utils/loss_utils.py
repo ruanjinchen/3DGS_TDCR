@@ -64,10 +64,11 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
         return ssim_map.mean(1).mean(1).mean(1)
 
 
-def aiap_loss(xyz_can, xyz_obs, cov_can, cov_obs, n_neighbors=21):
+def aiap_loss(xyz_can, xyz_obs, cov_can, cov_obs, rotation_can, rotation_obs, n_neighbors=21):
     _, index, _ = knn_points(xyz_can.unsqueeze(0), xyz_can.unsqueeze(0), K=n_neighbors, return_sorted=True)
     index = index.squeeze(0)
-    return _aiap_loss(xyz_can, xyz_obs, index=index), _aiap_loss(cov_can, cov_obs, index=index)
+    rigid_loss, rot_loss = _rigid_loss(xyz_can, xyz_obs, rotation_can, rotation_obs, n_neighbors, index)
+    return _aiap_loss(xyz_can, xyz_obs, index=index), _aiap_loss(cov_can, cov_obs, index=index), rigid_loss, rot_loss
 
 def _aiap_loss(x_canonical, x_deformed, n_neighbors=6, index=None):
     if index is None:
@@ -76,6 +77,33 @@ def _aiap_loss(x_canonical, x_deformed, n_neighbors=6, index=None):
     dists_canonical = torch.cdist(x_canonical.unsqueeze(1), x_canonical[index])[:,0,1:]
     dists_deformed = torch.cdist(x_deformed.unsqueeze(1), x_deformed[index])[:,0,1:]
     return F.l1_loss(dists_canonical, dists_deformed)
+
+def _rigid_loss(x_can, x_obs, rotation_can, rotation_obs, n_neighbors, index):
+    # weights = exp(2000 * ||x_can - x_can[index]||_2^2)
+    weights = torch.exp(-2000 * torch.norm(x_can.unsqueeze(1) - x_can[index], dim=-1) ** 2)[:, 1:]
+    vec_can = x_can[index] - x_can.unsqueeze(1)
+    vec_obs = x_obs[index] - x_obs.unsqueeze(1)
+    vec_can = vec_can[:, 1:, :]
+    vec_obs = vec_obs[:, 1:, :]
+    r = rotation_obs @ rotation_can.transpose(-1, -2)
+    vec_can = r.unsqueeze(1) @ vec_can.unsqueeze(-1)
+    vec_can = vec_can.squeeze(-1)
+
+    rigid_loss = torch.sum(weights * torch.norm(vec_obs - vec_can, dim=-1))
+    rigid_loss = rigid_loss / ((n_neighbors - 1) * x_can.size(0))
+
+    rot_j = r[index]
+    rot_j = rot_j[:, 1:]
+    rot_i = r.unsqueeze(1)
+    rot_loss = torch.sum(weights * torch.norm(rot_j - rot_i, dim=(-1, -2)))
+    rot_loss = rot_loss / ((n_neighbors - 1) * x_can.size(0))
+
+    return rigid_loss, rot_loss
+
+
+
+
+
 
 def center_loss(center_can, xyz_can, center_obs, xyz_obs, e_radii, n_neighbors=10):
     # k = max(n_neighbors, int(xyz_can.size(0)/40))

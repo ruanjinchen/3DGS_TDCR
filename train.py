@@ -35,13 +35,13 @@ from F_kinematic import GaussianDeformer
 
 from utils.camera_utils import camera_from_camInfo
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, train_until):
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, train_until, use_mlp=False):
     # torch.autograd.set_detect_anomaly(True)
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
-    transform = GaussianDeformer(dataset.joints, use_mlp=True)
+    transform = GaussianDeformer(dataset.joints, use_mlp=use_mlp)
     transform.set_optimizer(opt.iterations)
     transform.cuda()
     transform.train()
@@ -49,7 +49,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     if checkpoint:
         (model_params, transform_params, transform_opt_params, transform_sch_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
-        transform.load(transform_params, transform_opt_params, first_iter > train_until > 0)
+        transform.load(transform_params, transform_opt_params, first_iter > train_until > 0 or train_until == 0)
         # transform.optimizer_pt.load_state_dict(transform_pt_opt_params)
         transform.scheduler.load_state_dict(transform_sch_params)
 
@@ -103,6 +103,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Pick a random Camera
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
+
         viewpoint = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
         viewpoint_cam = camera_from_camInfo(viewpoint, 1.0, dataset)
 
@@ -127,14 +128,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             mask_loss = torch.nn.functional.mse_loss(mask, viewpoint_cam.gt_alpha_mask.cuda())
             loss += opt.lambda_mask * mask_loss
         if opt.lambda_aiap_xyz > 0.0 and iteration > train_until > 0:
-            xyz_can, xyz_obs, cov_can, cov_obs = render_pkg["xyz_can"], render_pkg["xyz_obs"], render_pkg["cov_can"], render_pkg["cov_obs"]
-            aiap_loss_xyz, aiap_loss_cov = aiap_loss(xyz_can, xyz_obs, cov_can, cov_obs)
-            loss += opt.lambda_aiap_xyz * aiap_loss_xyz + opt.lambda_aiap_cov * aiap_loss_cov
+            xyz_can, xyz_obs, cov_can, cov_obs, rotation_can, rotation_obs = render_pkg["xyz_can"], render_pkg["xyz_obs"], render_pkg["cov_can"], render_pkg["cov_obs"], render_pkg["rotation_can"], render_pkg["rotation_obs"]
+            aiap_loss_xyz, aiap_loss_cov, rigid_loss, rot_loss = aiap_loss(xyz_can, xyz_obs, cov_can, cov_obs, rotation_can, rotation_obs)
+            loss += opt.lambda_aiap_xyz * aiap_loss_xyz + opt.lambda_aiap_cov * aiap_loss_cov + rigid_loss + rot_loss
             # center_can = render_pkg["center_can"]
             # center_obs = render_pkg["center_obs"]
             # e_radii = render_pkg["e_radii"]
             # center_loss_v = center_loss(center_can, xyz_can, center_obs, xyz_obs, e_radii)
-            # loss += 0.1 * center_loss_v
+            # loss += 0.01 * center_loss_v
+            cycle_loss = render_pkg["cycle_loss"]
+            if cycle_loss is not None:
+                loss += 0.5 * cycle_loss
             # rotations = render_pkg["rotations"]
             # loss += rig_loss(rotations)
         loss.backward()
@@ -191,7 +195,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                             transform.scheduler.state_dict(),
                             iteration), scene.model_path + "/chkpnt_" + str(iteration) + ".pth")
                 if iteration >= train_until + 1000 and not iteration - 1000 in checkpoint_iterations:
-                    os.remove(scene.model_path + "/chkpnt_" + str(iteration - 1000) + ".pth")
+                    if os.path.exists(scene.model_path + "/chkpnt_" + str(iteration - 1000) + ".pth"):
+                        os.remove(scene.model_path + "/chkpnt_" + str(iteration - 1000) + ".pth")
 
 
 def prepare_output_and_logger(args):    
@@ -273,6 +278,7 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[3_000, 7_000, 30_000, 60_000, 90_000, 150_000, 200_000, 250_000, 300_000])
     parser.add_argument("--start_checkpoint", "-k", type=str, default = None)
     parser.add_argument("--train_gaussian_until_iter", "-u", type=int, default=3000)
+    parser.add_argument("--mlp", action="store_true")
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     
@@ -284,7 +290,7 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.train_gaussian_until_iter)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.train_gaussian_until_iter, args.mlp)
 
     # All done
     print("\nTraining complete.")

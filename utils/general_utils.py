@@ -131,7 +131,7 @@ def build_scaling_rotation(s, r):
     L[:,2,2] = s[:,2]
 
     L = R @ L
-    return L
+    return L, R
 
 def safe_state(silent):
     old_f = sys.stdout

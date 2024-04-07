@@ -25,15 +25,17 @@ class GaussianModel:
 
     def setup_functions(self):
         def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation, fwd = None):
-            L = build_scaling_rotation(scaling_modifier * scaling, rotation)
+            L, R = build_scaling_rotation(scaling_modifier * scaling, rotation)
+            R_obs = R
             actual_covariance = L @ L.transpose(1, 2)
             if fwd is not None:
                 # separate rotation from 4x4 matrix
                 fwd = fwd[:, :3, :3]
                 actual_covariance = fwd @ actual_covariance
                 actual_covariance = actual_covariance @ fwd.transpose(1, 2)
+                R_obs = fwd @ R
             symm = strip_symmetric(actual_covariance)
-            return symm
+            return symm, R, R_obs
         
         self.scaling_activation = torch.exp
         self.scaling_inverse_activation = torch.log
@@ -121,6 +123,8 @@ class GaussianModel:
     
     def get_covariance(self, scaling_modifier = 1, fwd = None):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation, fwd)
+
+
 
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
