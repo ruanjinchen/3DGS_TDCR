@@ -16,7 +16,7 @@ from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 from F_kinematic import GaussianDeformer
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, deformer : GaussianDeformer = None, render_mask = False):
+def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, deformer : GaussianDeformer = None, render_mask = False, add_mlp = False):
     """
     Render the scene. 
     
@@ -85,8 +85,9 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
 
     if deformer is not None:
         xyz_can = means3D
-        means3D, fwd, center_transformed, cycle_loss = deformer(means3D, joints)
+        means3D, fwd, center_transformed, cycle_loss = deformer(means3D, joints, add_mlp)
         xyz_obs = means3D
+        _, center_can = deformer.get_canonical()
 
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
@@ -145,6 +146,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
+
     return {"render": rendered_image,
             "viewspace_points": screenspace_points,
             "visibility_filter" : radii > 0,
@@ -154,9 +156,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             "xyz_obs": xyz_obs if deformer is not None else None,
             "cov_can": cov3D_can if pipe.compute_cov3D_python else None,
             "cov_obs": cov3D_precomp if pipe.compute_cov3D_python else None,
-            "center_can": deformer.ellipsoid_center_point if deformer is not None else None,
+            "center_can": center_can if deformer is not None else None,
             "center_obs": center_transformed if deformer is not None else None,
-            "e_radii":deformer.ellipsoid_radii if deformer is not None else None,
             "rotation_can": rotation_can if deformer is not None else None,
             "rotation_obs": rotation_obs if deformer is not None else None,
             "cycle_loss": cycle_loss if deformer is not None else None}

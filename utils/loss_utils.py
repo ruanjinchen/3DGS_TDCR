@@ -64,7 +64,7 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
         return ssim_map.mean(1).mean(1).mean(1)
 
 
-def aiap_loss(xyz_can, xyz_obs, cov_can, cov_obs, rotation_can, rotation_obs, n_neighbors=21):
+def aiap_loss(xyz_can, xyz_obs, cov_can, cov_obs, rotation_can, rotation_obs, n_neighbors=11):
     _, index, _ = knn_points(xyz_can.unsqueeze(0), xyz_can.unsqueeze(0), K=n_neighbors, return_sorted=True)
     index = index.squeeze(0)
     rigid_loss, rot_loss = _rigid_loss(xyz_can, xyz_obs, rotation_can, rotation_obs, n_neighbors, index)
@@ -105,9 +105,9 @@ def _rigid_loss(x_can, x_obs, rotation_can, rotation_obs, n_neighbors, index):
 
 
 
-def center_loss(center_can, xyz_can, center_obs, xyz_obs, e_radii, n_neighbors=10):
+def center_loss(center_can, xyz_can, center_obs, xyz_obs, n_neighbors=10):
     # k = max(n_neighbors, int(xyz_can.size(0)/40))
-    k = 10
+    k = 50
     _, index, _ = knn_points(center_can.unsqueeze(0), xyz_can.unsqueeze(0), K=k, return_sorted=True)
     index = index.squeeze(0)
 
