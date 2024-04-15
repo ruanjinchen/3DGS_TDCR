@@ -223,12 +223,12 @@ class GaussianDeformer(nn.Module):
             self.optimizer_rigid.load_state_dict(optimizer)
 
     def get_canonical(self):
-        # joints = torch.ones((self.num_joints,), dtype=torch.float, device='cuda') * 0.5 # joints are normalized to [0, 1], 0.5 is 0 degree
-        # transformation = self.rigid(joints)
+        joints = torch.ones((self.num_joints,), dtype=torch.float, device='cuda') * 0.5 # joints are normalized to [0, 1], 0.5 is 0 degree
+        transformation = self.rigid(joints)
         rotation = general_utils.build_rotation(self.ellipsoid_rotation)
         translation = self.ellipsoid_center_point
-        # rotation = transformation[:, :3, :3] @ rotation
-        # translation = translation + transformation[:, :3, 3]
+        rotation = transformation[:, :3, :3] @ rotation
+        translation = translation + transformation[:, :3, 3]
         return rotation, translation
 
 
@@ -375,7 +375,7 @@ class GaussianDeformer(nn.Module):
                 f = torch.cat([self.point_embedding(points), self.rest_pose.unsqueeze(0).expand(points.size(0), -1)], dim=-1)
                 add_weights = self.weight_mlp(f)
                 weights = weights + add_weights
-            weights = torch.softmax(-1000 * self.log_scale.exp() * weights, dim=-1)
+            weights = torch.softmax(-100 * self.log_scale.exp() * weights, dim=-1)
 
             # build 4x4 transformation matrix
             transformation = torch.zeros((self.num_part, 4, 4), device='cuda')
@@ -400,7 +400,7 @@ class GaussianDeformer(nn.Module):
                 f = torch.cat([self.point_embedding(transformed_points), joints.unsqueeze(0).expand(points.size(0), -1)], dim=-1)
                 add_weights_inverse = self.weight_mlp(f)
                 weights_inverse = weights_inverse + add_weights_inverse
-            weights_inverse = torch.softmax(-1000 * self.log_scale.exp() * weights_inverse, dim=-1)
+            weights_inverse = torch.softmax(-100 * self.log_scale.exp() * weights_inverse, dim=-1)
             inv_local_points = transformed_points.unsqueeze(1) - translation_obs.unsqueeze(0)
             inv_local_points_rotated = rotation_inv @ inv_local_points.unsqueeze(-1)
             inverse_points = inv_local_points_rotated.squeeze(-1) + translation_inv.unsqueeze(0) + translation_obs.unsqueeze(0)
