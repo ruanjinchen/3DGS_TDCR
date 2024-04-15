@@ -12,6 +12,7 @@
 import os
 import torch
 from random import randint
+import random
 
 import torchvision
 
@@ -59,7 +60,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
 
-    viewpoint_stack = None
+    viewpoint_stack = scene.getTrainCameras().copy()
+    total_pictrues = len(viewpoint_stack)
+    # create a list to store the loss of each picture, we choose pictures randomly, pictures with higher loss will be selected more frequently
+    loss_list = []
+    for i in range(total_pictrues):
+        loss_list.append(10.)
     ema_loss_for_log = 0.0
     ema_loss_for_log_image_only = 0.0
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
@@ -108,10 +114,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         for i in range(opt.accumulate_grad):
 
         # Pick a random Camera
-            if not viewpoint_stack:
-                viewpoint_stack = scene.getTrainCameras().copy()
+        #     if not viewpoint_stack:
+        #         viewpoint_stack = scene.getTrainCameras().copy()
 
-            viewpoint = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+            # Select a viewpoint based on the loss
+            index = random.choices(range(len(viewpoint_stack)), weights=loss_list, k=1)[0]
+
+            viewpoint = viewpoint_stack[index]
             viewpoint_cam = camera_from_camInfo(viewpoint, 1.0, dataset)
 
             # Render
@@ -129,6 +138,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             Ll1 = l1_loss(image, gt_image)
             loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
             image_loss = loss.item()
+            loss_list[index] = image_loss
             # loss = Ll1 + ssim(image, gt_image)
             # use mse loss for mask
             if opt.lambda_mask > 0.0:
@@ -282,10 +292,10 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[3_000, 7_000, 30_000, 60_000, 90_000, 150_000, 200_000, 250_000, 300_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[3_000, 7_000, 30_000, 60_000, 90_000, 150_000, 200_000, 250_000, 300_000])
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[3_000, 7_000, 30_000, 60_000, 90_000, 150_000, 200_000, 250_000, 300_000, 350_000, 400_000, 450_000, 500_000, 550_000, 600_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[3_000, 7_000, 30_000, 60_000, 90_000, 150_000, 200_000, 250_000, 300_000, 350_000, 400_000, 450_000, 500_000, 550_000, 600_000])
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[3_000, 7_000, 30_000, 60_000, 90_000, 150_000, 200_000, 250_000, 300_000])
+    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[3_000, 7_000, 30_000, 60_000, 90_000, 150_000, 200_000, 250_000, 300_000, 350_000, 400_000, 450_000, 500_000, 550_000, 600_000])
     parser.add_argument("--start_checkpoint", "-k", type=str, default = None)
     parser.add_argument("--train_gaussian_until_iter", "-u", type=int, default=7000)
     parser.add_argument("--mlp", action="store_true")
