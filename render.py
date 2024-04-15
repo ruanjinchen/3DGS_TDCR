@@ -35,7 +35,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
         view = camera_from_camInfo(view, 1.0, dataset)
-        results = render(view, gaussians, pipeline, background, deformer=deformer, render_mask=True)
+        results = render(view, gaussians, pipeline, background, deformer=deformer, render_mask=True, add_mlp=True)
         rendering, mask= results["render"], results["mask"]
         gt = view.original_image[0:3, :, :]
         torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))

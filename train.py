@@ -129,6 +129,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             Ll1 = l1_loss(image, gt_image)
             loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
             image_loss = loss.item()
+            # loss = Ll1 + ssim(image, gt_image)
             # use mse loss for mask
             if opt.lambda_mask > 0.0:
                 mask = render_pkg["mask"].squeeze(0)
@@ -196,6 +197,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # if (iteration in checkpoint_iterations):
         if iteration >= train_until and iteration % 1000 == 0:
             print("\n[ITER {}] Saving Checkpoint".format(iteration))
+            print("current point number: ", gaussians.get_xyz.shape[0])
             torch.save((gaussians.capture(),
                         transform.state_dict(),
                         transform.optimizer_rigid.state_dict(),
@@ -250,7 +252,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                     if iteration <= train_until:
                         image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs, deformer=None)["render"], 0.0, 1.0)
                     else:
-                        image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs, deformer=deformer)["render"], 0.0, 1.0)
+                        image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs, deformer=deformer, add_mlp=True)["render"], 0.0, 1.0)
                     gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
                     if tb_writer and (idx < 5):
                         tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
