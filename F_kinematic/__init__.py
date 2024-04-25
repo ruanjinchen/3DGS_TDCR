@@ -147,8 +147,8 @@ class RigidTransform_mul(nn.Module):
             rotation = self.rotation_net[i](rotation)
             translation = self.translation_net[i](translation)
             if i < self.num_layers - 1:
-                rotation = F.elu(rotation, alpha=1)
-                translation = F.elu(translation, alpha=1)
+                rotation = F.elu(rotation)
+                translation = F.elu(translation)
 
         if self.rotation_representation == "quat":
             # rotation = rotation.view(self.num_part, 4)
@@ -169,9 +169,9 @@ class RigidTransform_mul(nn.Module):
 
 
 class GaussianDeformer(nn.Module):
-    def __init__(self, num_joints, num_part=None, hidden_dim=128, num_layers=5, encoding=20, rotation_representation="quat", use_mlp=False, no_init=False):
+    def __init__(self, num_joints, num_part=None, hidden_dim=256, num_layers=5, encoding=20, rotation_representation="quat", use_mlp=False, no_init=False):
         super(GaussianDeformer, self).__init__()
-        self.rigid = RigidTransform_mul(num_joints, hidden_dim, 8, encoding, rotation_representation)
+        self.rigid = RigidTransform_mul(num_joints, 128, 8, encoding, rotation_representation)
         self.num_joints = num_joints
         self.num_part = num_part if num_part is not None else num_joints + 1
         self.optimizer_rigid, self.scheduler = None, None
@@ -198,12 +198,23 @@ class GaussianDeformer(nn.Module):
         if use_mlp:
             self.weight_mlp = VanillaCondMLP(self.point_input_dim, 0, self.num_part)
         else:
-            self.weight_mlp = VanillaCondMLP(self.point_input_dim + self.num_joints, 0, self.num_part)
+            # self.weight_mlp = nn.Sequential(
+            #     nn.Linear(self.point_input_dim + num_joints, hidden_dim),
+            #     nn.LeakyReLU(),
+            #     nn.Linear(hidden_dim, hidden_dim),
+            #     nn.LeakyReLU(),
+            #     nn.Linear(hidden_dim, hidden_dim),
+            #     nn.LeakyReLU(),
+            #     nn.Linear(hidden_dim, self.num_part),
+            # )
+            self.weight_mlp = VanillaCondMLP(self.point_input_dim + num_joints, 0, self.num_part)
 
         self.rest_pose = torch.ones(num_joints, dtype=torch.float, device='cuda') * 0.5
+        self.lr_transformation = 1e-4
+        self.lr_ellipsoid = 1e-3
 
     def set_optimizer(self, max_steps=100000):
-        self.optimizer_rigid = torch.optim.Adam(self.parameters(), lr=1e-4, eps=1e-8)
+        self.optimizer_rigid = torch.optim.Adam(self.parameters(), lr=self.lr_transformation, eps=1e-8)
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer_rigid, max_steps, eta_min=1e-8)
         # self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer_rigid, step_size=10000, gamma=0.5)
     def load(self, pa, optimizer=None, add=True):
@@ -223,12 +234,12 @@ class GaussianDeformer(nn.Module):
             self.optimizer_rigid.load_state_dict(optimizer)
 
     def get_canonical(self):
-        joints = torch.ones((self.num_joints,), dtype=torch.float, device='cuda') * 0.5 # joints are normalized to [0, 1], 0.5 is 0 degree
-        transformation = self.rigid(joints)
         rotation = general_utils.build_rotation(self.ellipsoid_rotation)
         translation = self.ellipsoid_center_point
-        rotation = transformation[:, :3, :3] @ rotation
-        translation = translation + transformation[:, :3, 3]
+
+        # transformation = self.rigid(self.rest_pose)
+        # rotation = transformation[:, :3, :3] @ rotation
+        # translation = translation + transformation[:, :3, 3]
         return rotation, translation
 
 
@@ -267,10 +278,10 @@ class GaussianDeformer(nn.Module):
             self.ellipsoid_rotation[:, 0] = 1.0
             self.ellipsoid_rotation = nn.Parameter(self.ellipsoid_rotation, requires_grad=True)
         # add to optimizer
-        self.optimizer_rigid.add_param_group({"params": self.ellipsoid_center_point})
+        self.optimizer_rigid.add_param_group({"params": self.ellipsoid_center_point, "lr": 0.0001})
         if not self.use_mlp:
-            self.optimizer_rigid.add_param_group({"params": self.ellipsoid_radii})
-            self.optimizer_rigid.add_param_group({"params": self.ellipsoid_rotation})
+            self.optimizer_rigid.add_param_group({"params": self.ellipsoid_radii, "lr": 0.001})
+            self.optimizer_rigid.add_param_group({"params": self.ellipsoid_rotation, "lr": 0.0001})
         self.ellipsoid_inited = torch.tensor(True)
 
     def ellipsoid(self, points, rotation, translation):
@@ -283,21 +294,26 @@ class GaussianDeformer(nn.Module):
         # rotation: [num_part, 3, 3]
         # build radii matrix [num_part, 3, 3]
         radii = torch.exp(self.ellipsoid_radii)
+        # radii = torch.clamp(radii, min=0.001, max=0.25)
         L = torch.zeros((radii.size(0), 3, 3), dtype=torch.float, device="cuda")
         L[:, 0, 0] = radii[:, 0]
         L[:, 1, 1] = radii[:, 1]
         L[:, 2, 2] = radii[:, 2]
-        L = L.unsqueeze(0)
-        rotation = rotation.unsqueeze(0)
-
+        L = L
+        rotation = rotation
+        L = rotation @ L
+        cov = L @ L.transpose(-1, -2)
+        cov_inv = torch.inverse(cov)
+        cov_inv = cov_inv.unsqueeze(0)
+        # test_inv = rotation.transpose(-1, -2) @ L @ L @ rotation
         # compute Mahalanobis distance as weights
         cord = points.unsqueeze(1) - translation.unsqueeze(0) # [num_point, num_part, 3]
         cord = cord.unsqueeze(-1) # [num_point, num_part, 3, 1]
-        dis = cord.transpose(-1, -2) @ rotation.transpose(-1, -2) @ L @ rotation @ cord
+        dis = cord.transpose(-1, -2) @ cov_inv @ cord # [num_point, num_part, 1, 1]
         # small distance has large weight
         dis = dis.squeeze(-1).squeeze(-1)
         W = dis
-        return W
+        return W, L
         # dist = torch.cdist(points, translation, 2)
         # W = torch.exp(-dist ** 2 / (2 * torch.exp(self.ellipsoid_radii) ** 2))
         # return W
@@ -338,11 +354,13 @@ class GaussianDeformer(nn.Module):
         # for i in range(self.num_part):
         #     transformation.append(self.rigid(joints, self.ellipsoid_center_point[i]))
         # transformation = torch.stack(transformation, dim=0)
+        # with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]) as prof:
         rotation_can, translation_can = self.get_canonical()
         transformation = self.rigid(joints)
         rotation = transformation[:, :3, :3]
         translation = transformation[:, :3, 3]
         # transformation: [num_part, 4, 4]
+        # p = points.detach()
 
 
         if self.use_mlp:
@@ -370,12 +388,12 @@ class GaussianDeformer(nn.Module):
         else:
             translation_obs = translation_can + translation
             rotation_obs = rotation @ rotation_can
-            weights = self.ellipsoid(points, rotation_can, translation_can)
+            weights, L = self.ellipsoid(points, rotation_can, translation_can)
             if delta_mlp:
                 f = torch.cat([self.point_embedding(points), self.rest_pose.unsqueeze(0).expand(points.size(0), -1)], dim=-1)
                 add_weights = self.weight_mlp(f)
                 weights = weights + add_weights
-            weights = torch.softmax(-100 * self.log_scale.exp() * weights, dim=-1)
+            weights = torch.softmax(-10 * self.log_scale.exp() * weights, dim=-1)
 
             # build 4x4 transformation matrix
             transformation = torch.zeros((self.num_part, 4, 4), device='cuda')
@@ -384,7 +402,7 @@ class GaussianDeformer(nn.Module):
             transformation[:, 3, 3] = 1.0 # [num_part, 4, 4]
             fwd = torch.matmul(weights, transformation.view(-1, 16)).view(-1, 4, 4)
 
-            rotation_inv = rotation.inverse()
+            rotation_inv = rotation.transpose(-1, -2)
             translation_inv = -translation
 
 
@@ -393,22 +411,24 @@ class GaussianDeformer(nn.Module):
             transformed_points = local_points_rotated.squeeze(-1) + translation.unsqueeze(0) + translation_can.unsqueeze(0)
             transformed_points = torch.sum(transformed_points * weights.unsqueeze(-1), dim=1)
 
+            if self.training:
+                # compute inverse transformation
+                weights_inverse, _ = self.ellipsoid(transformed_points, rotation_obs, translation_obs)
+                if delta_mlp:
+                    f = torch.cat([self.point_embedding(transformed_points), joints.unsqueeze(0).expand(points.size(0), -1)], dim=-1)
+                    add_weights_inverse = self.weight_mlp(f)
+                    weights_inverse = weights_inverse + add_weights_inverse
+                weights_inverse = torch.softmax(-10 * self.log_scale.exp() * weights_inverse, dim=-1)
+                inv_local_points = transformed_points.unsqueeze(1) - translation_obs.unsqueeze(0)
+                inv_local_points_rotated = rotation_inv @ inv_local_points.unsqueeze(-1)
+                inverse_points = inv_local_points_rotated.squeeze(-1) + translation_inv.unsqueeze(0) + translation_obs.unsqueeze(0)
+                inverse_points = torch.sum(inverse_points * weights_inverse.unsqueeze(-1), dim=1)
+                # compute transformed center
+                # l2 loss
+                cycle_loss = F.mse_loss(inverse_points, points)
 
-            # compute inverse transformation
-            weights_inverse = self.ellipsoid(transformed_points, rotation_obs, translation_obs)
-            if delta_mlp:
-                f = torch.cat([self.point_embedding(transformed_points), joints.unsqueeze(0).expand(points.size(0), -1)], dim=-1)
-                add_weights_inverse = self.weight_mlp(f)
-                weights_inverse = weights_inverse + add_weights_inverse
-            weights_inverse = torch.softmax(-100 * self.log_scale.exp() * weights_inverse, dim=-1)
-            inv_local_points = transformed_points.unsqueeze(1) - translation_obs.unsqueeze(0)
-            inv_local_points_rotated = rotation_inv @ inv_local_points.unsqueeze(-1)
-            inverse_points = inv_local_points_rotated.squeeze(-1) + translation_inv.unsqueeze(0) + translation_obs.unsqueeze(0)
-            inverse_points = torch.sum(inverse_points * weights_inverse.unsqueeze(-1), dim=1)
-            # compute transformed center
-            # l2 loss
-            cycle_loss = F.mse_loss(inverse_points, points)
-            return transformed_points, fwd, translation_obs, cycle_loss
+        # print(prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=-1))
+        return transformed_points, fwd, translation_obs, rotation_obs, L, cycle_loss if self.training else None
 
 
     def ellipsoid_volume_loss(self):
