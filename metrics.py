@@ -42,6 +42,8 @@ def evaluate(model_paths):
     print("")
 
     for scene_dir in model_paths:
+        if scene_dir == ".ipynb_checkpoints":
+            continue
         try:
             print("Scene:", scene_dir)
             full_dict[scene_dir] = {}
@@ -52,6 +54,8 @@ def evaluate(model_paths):
             test_dir = Path(scene_dir) / "test"
 
             for method in os.listdir(test_dir):
+                if method == ".ipynb_checkpoints":
+                    continue
                 print("Method:", method)
 
                 full_dict[scene_dir][method] = {}

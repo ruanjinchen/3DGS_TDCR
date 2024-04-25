@@ -24,23 +24,27 @@ from F_kinematic import GaussianDeformer
 from utils.system_utils import searchForMaxIteration
 from utils.camera_utils import camera_from_camInfo
 
+
 def render_set(model_path, name, iteration, views, gaussians, pipeline, background, deformer, dataset):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
     mask_path = os.path.join(model_path, name, "ours_{}".format(iteration), "masks")
+    bone_path = os.path.join(model_path, name, "ours_{}".format(iteration), "bone")
 
     makedirs(render_path, exist_ok=True)
     makedirs(gts_path, exist_ok=True)
     makedirs(mask_path, exist_ok=True)
+    makedirs(bone_path, exist_ok=True)
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
         view = camera_from_camInfo(view, 1.0, dataset)
-        results = render(view, gaussians, pipeline, background, deformer=deformer, render_mask=True, add_mlp=True)
-        rendering, mask= results["render"], results["mask"]
+        results = render(view, gaussians, pipeline, background, deformer=deformer, render_mask=True, add_mlp=True, render_bone=True)
+        rendering, mask, bone = results["render"], results["mask"], results["bone"]
         gt = view.original_image[0:3, :, :]
         torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
         torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
         torchvision.utils.save_image(mask.squeeze(0), os.path.join(mask_path, '{0:05d}'.format(idx) + ".png"))
+        torchvision.utils.save_image(bone.squeeze(0), os.path.join(bone_path, '{0:05d}'.format(idx) + ".png"))
 
 
 
@@ -57,7 +61,7 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
         (model_params, transform_params, transform_opt_params, transform_sch_params, first_iter) = torch.load(
             path)
         deformer.load(transform_params)
-
+        deformer.eval()
         bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 

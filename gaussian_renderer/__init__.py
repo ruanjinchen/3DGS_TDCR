@@ -11,12 +11,15 @@
 
 import torch
 import math
+
+import torchvision
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 from F_kinematic import GaussianDeformer
+from utils.general_utils import strip_symmetric
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, deformer : GaussianDeformer = None, render_mask = False, add_mlp = False):
+def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, deformer : GaussianDeformer = None, render_mask = False, add_mlp = False, render_bone = False):
     """
     Render the scene. 
     
@@ -85,7 +88,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
 
     if deformer is not None:
         xyz_can = means3D
-        means3D, fwd, center_transformed, cycle_loss = deformer(means3D, joints, add_mlp)
+        means3D, fwd, bone_translation_obs, bone_rotation_obs, L, cycle_loss = deformer(means3D, joints, add_mlp)
         xyz_obs = means3D
         _, center_can = deformer.get_canonical()
 
@@ -144,6 +147,24 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         )
         mask = mask[:1]
 
+    if render_bone:
+        cov3D = bone_rotation_obs @ L @ L.transpose(-1, -2) @ bone_rotation_obs.transpose(-1, -2)
+        cov3D = strip_symmetric(cov3D.squeeze(0))
+        colors_precomp = torch.ones(bone_translation_obs.shape[0], 3, device=bone_translation_obs.device)
+        rendered_image_bone, _ = rasterizer(
+            means3D = bone_translation_obs,
+            means2D = torch.zeros_like(bone_translation_obs, device=bone_translation_obs.device),
+            shs = None,
+            colors_precomp = colors_precomp,
+            opacities = torch.ones(bone_translation_obs.shape[0], device=opacity.device).unsqueeze(1),
+            scales = None,
+            rotations = None,
+            cov3D_precomp = cov3D
+        )
+        rendered_image_bone = rendered_image_bone[:1]
+        # save the bone image
+        torchvision.utils.save_image(rendered_image_bone, "bone.png")
+
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
 
@@ -157,8 +178,9 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             "cov_can": cov3D_can if pipe.compute_cov3D_python else None,
             "cov_obs": cov3D_precomp if pipe.compute_cov3D_python else None,
             "center_can": center_can if deformer is not None else None,
-            "center_obs": center_transformed if deformer is not None else None,
+            "center_obs": bone_translation_obs if deformer is not None else None,
             "rotation_can": rotation_can if deformer is not None else None,
             "rotation_obs": rotation_obs if deformer is not None else None,
-            "cycle_loss": cycle_loss if deformer is not None else None}
+            "cycle_loss": cycle_loss if deformer is not None else None,
+            "bone": rendered_image_bone if render_bone else None}
 

@@ -35,6 +35,7 @@ except ImportError:
 from F_kinematic import GaussianDeformer
 
 from utils.camera_utils import camera_from_camInfo
+from lpipsPyTorch import lpips
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, train_until, use_mlp=False):
     # torch.autograd.set_detect_anomaly(True)
@@ -71,6 +72,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
     loss_sum = 0.0
+    scaler = torch.cuda.amp.GradScaler()
     for iteration in range(first_iter, opt.iterations + 1):
 
         if iteration > train_until > 0:
@@ -114,13 +116,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         for i in range(opt.accumulate_grad):
 
         # Pick a random Camera
-        #     if not viewpoint_stack:
-        #         viewpoint_stack = scene.getTrainCameras().copy()
+            if not viewpoint_stack:
+                viewpoint_stack = scene.getTrainCameras().copy()
 
             # Select a viewpoint based on the loss
-            index = random.choices(range(len(viewpoint_stack)), weights=loss_list, k=1)[0]
+            index = random.choices(range(len(viewpoint_stack)), k=1)[0]
 
-            viewpoint = viewpoint_stack[index]
+            viewpoint = viewpoint_stack.pop(index)
             viewpoint_cam = camera_from_camInfo(viewpoint, 1.0, dataset)
 
             # Render
@@ -128,37 +130,46 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 pipe.debug = True
 
             bg = torch.rand((3), device="cuda") if opt.random_background else background
+
             if iteration <= train_until and train_until > 0:
-                render_pkg = render(viewpoint_cam, gaussians, pipe, bg, deformer=None, render_mask=opt.lambda_mask > 0.0)
+                render_pkg = render(viewpoint_cam, gaussians, pipe, bg, deformer=None, render_mask=opt.lambda_mask > 0.0, render_bone=False)
             else:
-                render_pkg = render(viewpoint_cam, gaussians, pipe, bg, deformer=transform, render_mask=opt.lambda_mask > 0.0, add_mlp=True)
+                render_pkg = render(viewpoint_cam, gaussians, pipe, bg, deformer=transform, render_mask=opt.lambda_mask > 0.0, add_mlp=True, render_bone=True)
             image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+
             # Loss
             gt_image = viewpoint_cam.original_image.cuda()
             Ll1 = l1_loss(image, gt_image)
-            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+            loss = opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + (1.0 - opt.lambda_dssim) * Ll1
+            # loss += 0.5 * lpips(image, gt_image, net_type='vgg').squeeze()
             image_loss = loss.item()
             loss_list[index] = image_loss
             # loss = Ll1 + ssim(image, gt_image)
             # use mse loss for mask
             if opt.lambda_mask > 0.0:
                 mask = render_pkg["mask"].squeeze(0)
+                bone = render_pkg["bone"].squeeze(0) if render_pkg["bone"] is not None else None
                 mask_loss = torch.nn.functional.mse_loss(mask, viewpoint_cam.gt_alpha_mask.cuda())
                 loss += opt.lambda_mask * mask_loss
+                if bone is not None:
+                    bone_loss = torch.nn.functional.mse_loss(bone, viewpoint_cam.gt_alpha_mask.cuda())
+                    loss += 0.01 * bone_loss
+                loss += 0.05 * transform.ellipsoid_volume_loss()
             if opt.lambda_aiap_xyz > 0.0 and iteration > train_until > 0:
                 xyz_can, xyz_obs, cov_can, cov_obs, rotation_can, rotation_obs = render_pkg["xyz_can"], render_pkg["xyz_obs"], render_pkg["cov_can"], render_pkg["cov_obs"], render_pkg["rotation_can"], render_pkg["rotation_obs"]
                 aiap_loss_xyz, aiap_loss_cov, rigid_loss, rot_loss = aiap_loss(xyz_can, xyz_obs, cov_can, cov_obs, rotation_can, rotation_obs)
-                loss += opt.lambda_aiap_xyz * aiap_loss_xyz + opt.lambda_aiap_cov * aiap_loss_cov + rigid_loss + rot_loss
+                loss += opt.lambda_aiap_xyz * aiap_loss_xyz + rigid_loss + rot_loss
                 # center_can = render_pkg["center_can"]
                 # center_obs = render_pkg["center_obs"]
                 # center_loss_v = center_loss(center_can, xyz_can, center_obs, xyz_obs)
                 # loss += center_loss_v
                 cycle_loss = render_pkg["cycle_loss"]
                 if cycle_loss is not None:
-                    loss += cycle_loss
+                    loss += 0.1 * cycle_loss
                 # rotations = render_pkg["rotations"]
                 # loss += rig_loss(rotations)
             loss = loss / opt.accumulate_grad
+            # scaler.scale(loss).backward()
             loss.backward()
 
         iter_end.record()
@@ -197,11 +208,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # Optimizer step
         if iteration < opt.iterations :
             if train_until == 0 or iteration > train_until:
-                transform.optimize()
+                # scaler.step(transform.optimizer_rigid)
+                transform.optimizer_rigid.step()
+                transform.scheduler.step()
+                transform.optimizer_rigid.zero_grad(set_to_none = True)
                 gaussians.optimizer.step()
+                # scaler.step(gaussians.optimizer)
             else:
                 gaussians.optimizer.step()
+                # scaler.step(gaussians.optimizer)
             gaussians.optimizer.zero_grad(set_to_none = True)
+            # scaler.update()
 
 
         # if (iteration in checkpoint_iterations):
