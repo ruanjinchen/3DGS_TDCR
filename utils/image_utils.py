@@ -21,10 +21,12 @@ def psnr(img1, img2):
     return 20 * torch.log10(1.0 / torch.sqrt(mse))
 
 def load_image(image_path, white_background=False):
+    if image_path.split(".")[-1] == "jpg":
+        image_path = image_path.replace("jpg", "png")
+
     image = Image.open(image_path)
 
     im_data = np.array(image.convert("RGBA"))
-
 
     bg = np.array([1, 1, 1]) if white_background else np.array([0, 0, 0])
     #

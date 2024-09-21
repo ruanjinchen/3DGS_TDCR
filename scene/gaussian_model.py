@@ -411,6 +411,17 @@ class GaussianModel:
 
         torch.cuda.empty_cache()
 
+    def prune(self, min_opacity):
+        prune_mask = (self.get_opacity < min_opacity).squeeze()
+        keep_mask = ~prune_mask
+        self._features_dc = self._features_dc[keep_mask]
+        self._features_rest = self._features_rest[keep_mask]
+        self._opacity = self._opacity[keep_mask]
+        self._scaling = self._scaling[keep_mask]
+        self._rotation = self._rotation[keep_mask]
+        self._xyz = self._xyz[keep_mask]
+        # torch.cuda.empty_cache()
+
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
