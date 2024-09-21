@@ -63,7 +63,7 @@ def loadCam(args, id, cam_info, resolution_scale):
     limit = args.joint_limit
     limit = limit / 180 * np.pi
     # normalize joints
-    joints = (joints + limit) / (2 * limit)
+    # joints = joints / limit
 
     return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY, 

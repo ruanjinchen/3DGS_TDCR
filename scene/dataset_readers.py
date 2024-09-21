@@ -249,7 +249,7 @@ def readNerfSyntheticInfo(path, white_background, eval, size, extension=".png"):
         print(f"Generating random point cloud ({num_pts})...")
         
         # We create random points inside the bounds of the synthetic Blender scenes
-        xyz = np.random.random((num_pts, 3)) * 2.6 - 1.3
+        xyz = np.random.random((num_pts, 3)) * 1 - 0.5 # assume scene is in [-0.5, 0.5]^3
         shs = np.random.random((num_pts, 3)) / 255.0
         pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
 
@@ -266,7 +266,97 @@ def readNerfSyntheticInfo(path, white_background, eval, size, extension=".png"):
                            ply_path=ply_path)
     return scene_info
 
+def readCamerasFromRealDataInfos(path, infofile, white_background, size, extension=".png"):
+    cam_infos = []
+    # read joint angle from joint.txt
+    joint_zero = []
+    joint30 = []
+    joint_all = []
+    with open(os.path.join(path, "joint_zero.txt")) as fid:
+        # read txt file
+        joint_angles = fid.readlines()
+        for line in joint_angles:
+            # every line is a list of joint angles, like [0, 0, 0, 0]
+            joint_angles_str = line.strip()
+            joint_angles_list = joint_angles_str[1: -1].split()
+            joint = list(map(float, joint_angles_list))
+            joint_zero.append(joint)
+    with open(os.path.join(path, "joint30.txt")) as fid:
+        # read txt file
+        joint_angles = fid.readlines()
+        for line in joint_angles:
+            # every line is a list of joint angles, like [0, 0, 0, 0]
+            joint_angles_str = line.strip()
+            joint_angles_list = joint_angles_str[1: -1].split()
+            joint = list(map(float, joint_angles_list))
+            joint30.append(joint)
+    with open(os.path.join(path, "joint.txt")) as fid:
+        # read txt file
+        joint_angles = fid.readlines()
+        for line in joint_angles:
+            # every line is a list of joint angles, like [0, 0, 0, 0]
+            joint_angles_str = line.strip()
+            joint_angles_list = joint_angles_str[1: -1].split()
+            joint = list(map(float, joint_angles_list))
+            joint_all.append(joint)
+
+
+    with open(os.path.join(path, infofile)) as json_file:
+        contents = json.load(json_file)
+        images = contents["images"]
+
+        for idx, image in enumerate(images):
+            image_name = image["name"]
+            R = np.array(image["R"])
+            T = np.array(image["T"])
+            fovx = image["fovx"]
+            fovy = image["fovy"]
+            image_path = image["image_path"]
+            width = image["width"]
+            height = image["height"]
+            if infofile.split("_")[1] == "zero":
+                joints = joint_zero[0]
+            elif infofile.split("_")[1] == "30d":
+                joints = joint30[image["joint_id"]]
+            else:
+                joints = joint_all[image["joint_id"]]
+            cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=fovy, FovX=fovx, image=None,
+                            image_path=image_path, image_name=image_name, width=width, height=height, joints=joints))
+    return cam_infos
+
+
+
+def readRealDataInfo(mixpath, images, eval, llffhold=8):
+    path = mixpath.split(".")[0]
+    joint_type = mixpath.split(".")[1]
+    print("Reading Training Transforms")
+    train_cam_infos = readCamerasFromRealDataInfos(path, "info_" + joint_type + "_train.json", False, (640, 480), ".png")
+    print("Reading Test Transforms")
+    test_cam_infos = readCamerasFromRealDataInfos(path, "info_" + joint_type + "_train.json", False, (640, 480), ".png")
+    if not eval:
+        train_cam_infos.extend(test_cam_infos)
+        test_cam_infos = []
+
+    nerf_normalization = getNerfppNorm(train_cam_infos)
+    ply_path = os.path.join(path, "points3d.ply")
+    if not os.path.exists(ply_path):
+        xyz, rgb, _ = read_points3D_text(os.path.join(path, "points3D.txt"))
+        storePly(ply_path, xyz, rgb)
+    try:
+        pcd = fetchPly(ply_path)
+    except:
+        pcd = None
+
+    scene_info = SceneInfo(point_cloud=pcd,
+                           train_cameras=train_cam_infos,
+                           test_cameras=test_cam_infos,
+                           nerf_normalization=nerf_normalization,
+                           ply_path=ply_path)
+    return scene_info
+
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
-    "Blender" : readNerfSyntheticInfo
+    "Blender" : readNerfSyntheticInfo,
+    "realdata": readRealDataInfo
 }
+

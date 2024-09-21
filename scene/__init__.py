@@ -46,7 +46,7 @@ class Scene:
             print("Found transforms_train.json file, assuming Blender data set!")
             scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.eval, args.size)
         else:
-            assert False, "Could not recognize scene type!"
+            scene_info = sceneLoadTypeCallbacks["realdata"](args.source_path, args.images, args.eval)
 
         if not self.loaded_iter:
             with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
@@ -69,7 +69,7 @@ class Scene:
         self.cameras_extent = scene_info.nerf_normalization["radius"]
 
         # self.train_cameras = {}
-        self.test_cameras = {}
+        # self.test_cameras = {}
 
         # for resolution_scale in resolution_scales:
             # print("Loading Training Cameras")

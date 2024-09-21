@@ -10,13 +10,15 @@
 #
 
 import os
+
+from pytorch3d.loss import chamfer_distance
 import torch
 from random import randint
 import random
 
 import torchvision
 
-from utils.loss_utils import l1_loss, ssim, aiap_loss, center_loss, rig_loss
+from utils.loss_utils import l1_loss, ssim, aiap_loss, center_loss, sparse_loss
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene
@@ -43,6 +45,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
+    dim_features = gaussians.get_features.shape[1] * 3
     transform = GaussianDeformer(dataset.joints, use_mlp=use_mlp)
     transform.set_optimizer(opt.iterations)
     transform.cuda()
@@ -91,7 +94,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 net_image_bytes = None
                 custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
                 if custom_cam != None:
-                    net_image = render(custom_cam, gaussians, pipe, background, scaling_modifer)["render"]
+                    net_image = render(custom_cam, gaussians, pipe, background, scaling_modifer)["renders"]
                     net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
                 network_gui.send(net_image_bytes, dataset.source_path)
                 if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
@@ -135,37 +138,54 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 render_pkg = render(viewpoint_cam, gaussians, pipe, bg, deformer=None, render_mask=opt.lambda_mask > 0.0, render_bone=False)
             else:
                 render_pkg = render(viewpoint_cam, gaussians, pipe, bg, deformer=transform, render_mask=opt.lambda_mask > 0.0, add_mlp=True, render_bone=True)
-            image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+            image, viewspace_point_tensor, visibility_filter, radii = render_pkg["renders"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
             # Loss
             gt_image = viewpoint_cam.original_image.cuda()
+            # show gt_image
+            torchvision.utils.save_image(gt_image, "gt_image.png")
             Ll1 = l1_loss(image, gt_image)
             loss = opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + (1.0 - opt.lambda_dssim) * Ll1
             # loss += 0.5 * lpips(image, gt_image, net_type='vgg').squeeze()
             image_loss = loss.item()
             loss_list[index] = image_loss
+
             # loss = Ll1 + ssim(image, gt_image)
             # use mse loss for mask
             if opt.lambda_mask > 0.0:
                 mask = render_pkg["mask"].squeeze(0)
                 bone = render_pkg["bone"].squeeze(0) if render_pkg["bone"] is not None else None
-                mask_loss = torch.nn.functional.mse_loss(mask, viewpoint_cam.gt_alpha_mask.cuda())
+                gt_mask = viewpoint_cam.gt_alpha_mask.cuda()
+                mask_loss = torch.nn.functional.l1_loss(mask, gt_mask)
                 loss += opt.lambda_mask * mask_loss
                 if bone is not None:
-                    bone_loss = torch.nn.functional.mse_loss(bone, viewpoint_cam.gt_alpha_mask.cuda())
-                    loss += 0.01 * bone_loss
-                loss += 0.05 * transform.ellipsoid_volume_loss()
+                    # # transform bone and mask to 2d point cloud
+                    # image_size = torch.tensor([image.shape[1], image.shape[2]], device=image.device)
+                    # # set bone to 0-1
+                    # bone[bone < 0.5] = 0
+                    # torchvision.utils.save_image(bone, "bone.png")
+                    # bone = torch.nonzero(bone).float().unsqueeze(0)
+                    # gt_mask = torch.nonzero(gt_mask).float().unsqueeze(0)
+                    # # scale to 0-1
+                    # bone = bone / image_size
+                    # gt_mask = gt_mask / image_size
+
+                    bone_loss = torch.nn.functional.l1_loss(bone, gt_mask)
+                    loss += .1 * bone_loss
+                    loss += .001 * transform.ellipsoid_volume_loss()
             if opt.lambda_aiap_xyz > 0.0 and iteration > train_until > 0:
                 xyz_can, xyz_obs, cov_can, cov_obs, rotation_can, rotation_obs = render_pkg["xyz_can"], render_pkg["xyz_obs"], render_pkg["cov_can"], render_pkg["cov_obs"], render_pkg["rotation_can"], render_pkg["rotation_obs"]
-                aiap_loss_xyz, aiap_loss_cov, rigid_loss, rot_loss = aiap_loss(xyz_can, xyz_obs, cov_can, cov_obs, rotation_can, rotation_obs)
-                loss += opt.lambda_aiap_xyz * aiap_loss_xyz + rigid_loss + rot_loss
+                weights = render_pkg["weights"]
+                aiap_loss_xyz, aiap_loss_cov, rigid_loss, rot_loss, smooth_loss = aiap_loss(xyz_can, xyz_obs, cov_can, cov_obs, rotation_can, rotation_obs, weights)
+                loss += opt.lambda_aiap_xyz * aiap_loss_xyz + 0.1 * rigid_loss + 0.1 * rot_loss + 10 * smooth_loss
+                # loss += 0.1 * sparse_loss(weights)
                 # center_can = render_pkg["center_can"]
-                # center_obs = render_pkg["center_obs"]
-                # center_loss_v = center_loss(center_can, xyz_can, center_obs, xyz_obs)
-                # loss += center_loss_v
+                center_obs = render_pkg["center_obs"]
+                center_loss_v = center_loss(center_obs)
+                loss += 0.1 * center_loss_v
                 cycle_loss = render_pkg["cycle_loss"]
                 if cycle_loss is not None:
-                    loss += 0.1 * cycle_loss
+                    loss += 1 * cycle_loss
                 # rotations = render_pkg["rotations"]
                 # loss += rig_loss(rotations)
             loss = loss / opt.accumulate_grad
@@ -211,8 +231,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 # scaler.step(transform.optimizer_rigid)
                 transform.optimizer_rigid.step()
                 transform.scheduler.step()
+                # print(transform.scheduler.T_max)
                 transform.optimizer_rigid.zero_grad(set_to_none = True)
-                gaussians.optimizer.step()
+                # gaussians.optimizer.step()
                 # scaler.step(gaussians.optimizer)
             else:
                 gaussians.optimizer.step()
@@ -234,6 +255,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration >= train_until + 1000 and not iteration - 1000 in checkpoint_iterations:
                 if os.path.exists(scene.model_path + "/chkpnt_" + str(iteration - 1000) + ".pth"):
                     os.remove(scene.model_path + "/chkpnt_" + str(iteration - 1000) + ".pth")
+
+        if iteration == 7000 or iteration == 300_000 or iteration == 150000 or iteration == 30000:
+            break
 
 
 def prepare_output_and_logger(args):    
@@ -277,12 +301,12 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 for idx, viewpoint in enumerate(config['cameras']):
                     viewpoint = camera_from_camInfo(viewpoint, 1.0, scene.args)
                     if iteration <= train_until:
-                        image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs, deformer=None)["render"], 0.0, 1.0)
+                        image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs, deformer=None)["renders"], 0.0, 1.0)
                     else:
-                        image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs, deformer=deformer, add_mlp=True)["render"], 0.0, 1.0)
+                        image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs, deformer=deformer, add_mlp=True)["renders"], 0.0, 1.0)
                     gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
                     if tb_writer and (idx < 5):
-                        tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
+                        tb_writer.add_images(config['name'] + "_view_{}/renders".format(viewpoint.image_name), image[None], global_step=iteration)
                         if iteration == testing_iterations[0]:
                             tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
                     l1_test += l1_loss(image, gt_image).mean().double()
@@ -309,10 +333,10 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[3_000, 7_000, 30_000, 60_000, 90_000, 150_000, 200_000, 250_000, 300_000, 350_000, 400_000, 450_000, 500_000, 550_000, 600_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[3_000, 7_000, 30_000, 60_000, 90_000, 150_000, 200_000, 250_000, 300_000, 350_000, 400_000, 450_000, 500_000, 550_000, 600_000])
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 12_000, 30_000, 60_000, 90_000, 120_000, 150_000, 200_000, 250_000, 300_000, 350_000, 400_000, 450_000, 500_000, 550_000, 600_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 12_000, 30_000, 60_000, 90_000, 120_000, 150_000, 200_000, 250_000, 300_000, 350_000, 400_000, 450_000, 500_000, 550_000, 600_000])
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[3_000, 7_000, 30_000, 60_000, 90_000, 150_000, 200_000, 250_000, 300_000, 350_000, 400_000, 450_000, 500_000, 550_000, 600_000])
+    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[7_000, 12_000, 30_000, 60_000, 90_000, 120_000, 150_000, 200_000, 250_000, 300_000, 350_000, 400_000, 450_000, 500_000, 550_000, 600_000])
     parser.add_argument("--start_checkpoint", "-k", type=str, default = None)
     parser.add_argument("--train_gaussian_until_iter", "-u", type=int, default=7000)
     parser.add_argument("--mlp", action="store_true")

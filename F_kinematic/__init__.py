@@ -1,3 +1,4 @@
+import pytorch3d
 import torch
 import torch.nn as nn
 from F_kinematic import pos_encoding
@@ -5,9 +6,11 @@ import torch.nn.functional as F
 from utils import general_utils
 from F_kinematic.weightMLP import VanillaCondMLP
 from F_kinematic.embedding import SimpleEmbedding, EmbeddingDecomposition
-from PointTransformer.model import PointTransformerSeg
+
 from sklearn.cluster import KMeans
 from pytorch3d.ops.knn import knn_points
+from pytorch3d.transforms import rotation_6d_to_matrix
+from F_kinematic import KAN
 
 class RigidTransform(nn.Module):
     def __init__(self, num_joints, hidden_dim=128, num_layers=2, encoding=20, rotation_representation="quat"):
@@ -93,17 +96,21 @@ class RigidTransform(nn.Module):
         return transformation
 
 class RigidTransform_mul(nn.Module):
-    def __init__(self, num_joints, hidden_dim=128, num_layers=2, encoding=20, rotation_representation="quat"):
+    def __init__(self, num_joints, hidden_dim=128, num_layers=2, encoding=20, rotation_representation="quat", num_part=0):
         super(RigidTransform_mul, self).__init__()
         self.num_joints = num_joints
-        self.num_part = num_joints + 1
+        self.num_part = num_joints + 1 if num_part is None else num_part
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.rotation_representation = rotation_representation
         self.embedding_dim = 128
-        self.joints_embed = SimpleEmbedding(self.num_joints, self.embedding_dim)
-        self.input_dim = self.embedding_dim
-        self.decomposition = EmbeddingDecomposition(input_dim=self.input_dim, num_part=self.num_part)
+        self.encoding = pos_encoding.FixedPositionalEncoding(encoding) if encoding is not None else None
+        if encoding is not None:
+            self.input_dim = self.num_joints + self.num_joints * encoding
+        else:
+            self.input_dim = self.num_joints
+        self.joints_embed = SimpleEmbedding(self.input_dim, self.embedding_dim)
+        self.decomposition = EmbeddingDecomposition(input_dim=self.embedding_dim, num_part=self.num_part)
 
         if self.rotation_representation == "quat":
             # 以四元数表示旋转
@@ -115,7 +122,7 @@ class RigidTransform_mul(nn.Module):
         rotation_net = []
         for i in range(num_layers):
             if i == 0:
-                rotation_net.append(nn.Linear(self.input_dim, self.hidden_dim))
+                rotation_net.append(nn.Linear(self.embedding_dim, self.hidden_dim))
             elif i == num_layers - 1:
                 rotation_net.append(nn.Linear(self.hidden_dim, self.output_dim_rotation))
             else:
@@ -127,7 +134,7 @@ class RigidTransform_mul(nn.Module):
         translation_net = []
         for i in range(num_layers):
             if i == 0:
-                translation_net.append(nn.Linear(self.input_dim, self.hidden_dim))
+                translation_net.append(nn.Linear(self.embedding_dim, self.hidden_dim))
             elif i == num_layers - 1:
                 translation_net.append(nn.Linear(self.hidden_dim, self.output_dim_translation))
             else:
@@ -137,9 +144,11 @@ class RigidTransform_mul(nn.Module):
 
     def forward(self, joints):
         # joints: [num_joints]
-        # joints = self.encoding(joints)
-        joints_embed = self.joints_embed(joints)
-        joints_embed = self.decomposition(joints_embed)
+        # joints = joints.unsqueeze(-1)
+        if self.encoding is not None:
+            joints = self.encoding(joints)
+        joints = self.joints_embed(joints)
+        joints_embed = self.decomposition(joints)
 
         rotation = joints_embed
         translation = joints_embed
@@ -155,7 +164,7 @@ class RigidTransform_mul(nn.Module):
             rotation = general_utils.build_rotation(rotation)
         elif self.rotation_representation == "mat":
             # rotation = rotation.view(self.num_part, 6)
-            rotation = general_utils.rotation_6d_to_matrix(rotation)
+            rotation = rotation_6d_to_matrix(rotation)
 
         # translation = translation.view(self.num_part, 3)
         # rotation: [num_part, 3, 3], translation: [num_part, 3]
@@ -167,13 +176,74 @@ class RigidTransform_mul(nn.Module):
         return transformation
 
 
+class RigidTransform_Kan(nn.Module):
+    def __init__(self, num_joints, hidden_dim=128, num_layers=2, encoding=20, rotation_representation="quat", num_part=0):
+        super(RigidTransform_Kan, self).__init__()
+        self.num_joints = num_joints
+        self.num_part = num_joints + 1 if num_part == 0 else num_part
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.rotation_representation = rotation_representation
+        self.embedding_dim = 128
+        self.joint_embedding = KAN.KANLinear(self.num_joints, self.embedding_dim * self.num_part)
+        if self.rotation_representation == "quat":
+            # 以四元数表示旋转
+            self.output_dim_rotation = 4
+        elif self.rotation_representation == "mat":
+            # 以6D矩阵表示旋转
+            self.output_dim_rotation = 6
+
+        rotation_net = []
+        for i in range(num_layers):
+            if i == 0:
+                rotation_net.append(KAN.KANLinear(self.embedding_dim, self.hidden_dim))
+            elif i == num_layers - 1:
+                rotation_net.append(KAN.KANLinear(self.hidden_dim, self.output_dim_rotation))
+            else:
+                rotation_net.append(KAN.KANLinear(self.hidden_dim, self.hidden_dim))
+        self.rotation_net = nn.ModuleList(rotation_net)
+
+        self.output_dim_translation = 3
+        translation_net = []
+        for i in range(num_layers):
+            if i == 0:
+                translation_net.append(KAN.KANLinear(self.embedding_dim, self.hidden_dim))
+            elif i == num_layers - 1:
+                translation_net.append(KAN.KANLinear(self.hidden_dim, self.output_dim_translation))
+            else:
+                translation_net.append(KAN.KANLinear(self.hidden_dim, self.hidden_dim))
+        self.translation_net = nn.ModuleList(translation_net)
+
+    def forward(self, joints):
+        joints = self.joint_embedding(joints).reshape(self.num_part, self.embedding_dim)
+        rotation = joints
+        translation = joints
+        for i in range(self.num_layers):
+            rotation = self.rotation_net[i](rotation)
+            translation = self.translation_net[i](translation)
+
+        if self.rotation_representation == "quat":
+            rotation = general_utils.build_rotation(rotation)
+        elif self.rotation_representation == "mat":
+            rotation = rotation_6d_to_matrix(rotation)
+
+        transformation = torch.zeros((self.num_part, 4, 4), device='cuda')
+        transformation[:, :3, :3] = rotation
+        transformation[:, :3, 3] = translation
+        transformation[:, 3, 3] = 1.0
+        return transformation
+
+
+
+
 
 class GaussianDeformer(nn.Module):
-    def __init__(self, num_joints, num_part=None, hidden_dim=256, num_layers=5, encoding=20, rotation_representation="quat", use_mlp=False, no_init=False):
+    def __init__(self, num_joints, num_part=7, hidden_dim=256, num_layers=5, encoding=10, rotation_representation="quat", use_mlp=False, no_init=False):
         super(GaussianDeformer, self).__init__()
-        self.rigid = RigidTransform_mul(num_joints, 128, 8, encoding, rotation_representation)
-        self.num_joints = num_joints
         self.num_part = num_part if num_part is not None else num_joints + 1
+        self.rigid = RigidTransform_mul(num_joints, 128, 5, 0, "quat", num_part)
+        self.num_joints = num_joints
+
         self.optimizer_rigid, self.scheduler = None, None
         # self.scale_mlp = nn.Sequential(
         #     nn.Linear(hidden_dim, hidden_dim),
@@ -183,7 +253,7 @@ class GaussianDeformer(nn.Module):
         #     nn.Linear(hidden_dim, 3 * (num_joints + 1)),
         # )
         # self.bone_parameters = nn.Parameter(torch.randn((num_joints + 1, hidden_dim), dtype=torch.float, device='cuda'))
-        self.point_embedding = pos_encoding.FixedPositionalEncoding(encoding)
+        self.point_embedding = pos_encoding.FixedPositionalEncoding(encoding) if encoding > 0 else torch.nn.Identity()
         self.point_input_dim = 3 + 3 * encoding
 
         self.ellipsoid_center_point = torch.randn((self.num_part, 3), dtype=torch.float, device='cuda')
@@ -208,13 +278,20 @@ class GaussianDeformer(nn.Module):
             #     nn.Linear(hidden_dim, self.num_part),
             # )
             self.weight_mlp = VanillaCondMLP(self.point_input_dim + num_joints, 0, self.num_part)
+            # self.weight_mlp = nn.Sequential(
+            #     KAN.KANLinear(self.point_input_dim + num_joints, hidden_dim),
+            #     KAN.KANLinear(hidden_dim, hidden_dim),
+            #     KAN.KANLinear(hidden_dim, self.num_part),
+            # )
 
-        self.rest_pose = torch.ones(num_joints, dtype=torch.float, device='cuda') * 0.5
+        self.rest_pose = torch.zeros(num_joints, dtype=torch.float, device='cuda')
         self.lr_transformation = 1e-4
         self.lr_ellipsoid = 1e-3
+        self.max_radii = 10 / self.num_part / 1.5
+        self.min_radii = .001
 
     def set_optimizer(self, max_steps=100000):
-        self.optimizer_rigid = torch.optim.Adam(self.parameters(), lr=self.lr_transformation, eps=1e-8)
+        self.optimizer_rigid = torch.optim.AdamW(self.parameters(), lr=self.lr_transformation, eps=1e-8)
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer_rigid, max_steps, eta_min=1e-8)
         # self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer_rigid, step_size=10000, gamma=0.5)
     def load(self, pa, optimizer=None, add=True):
@@ -256,32 +333,38 @@ class GaussianDeformer(nn.Module):
             if not self.use_mlp:
                 self.ellipsoid_radii = nn.Parameter(torch.zeros((self.num_part, 3), dtype=torch.float, device='cuda'), requires_grad=True)
         else:
-            kmeans = KMeans(n_clusters=self.num_part, random_state=0).fit(points.cpu().detach().numpy())
+            kmeans = KMeans(n_clusters=self.num_part, n_init=10).fit(points.cpu().detach().numpy())
             ellipsoid_center_point = torch.tensor(kmeans.cluster_centers_, dtype=torch.float, device='cuda')
             self.ellipsoid_center_point = nn.Parameter(ellipsoid_center_point, requires_grad=True)
             # compute the radii of the ellipsoid
             if not self.use_mlp:
-                distance = torch.cdist(points.detach(), ellipsoid_center_point, 2)
-                distance = distance.cpu().numpy()
-                # radii is the maximum distance from the center to the points belong to the ellipsoid
-                radii = []
-                for i in range(self.num_part):
-                    radii.append(distance[kmeans.labels_ == i][..., i].max())
-                ellipsoid_radii = torch.tensor(radii, dtype=torch.float, device='cuda')
+#                 distance = torch.cdist(points.detach(), ellipsoid_center_point, 2)
+#                 distance = distance.cpu().numpy()
+#                 # radii is the maximum distance from the center to the points belong to the ellipsoid
+#                 radii = []
+#                 for i in range(self.num_part):
+#                     radii.append(distance[kmeans.labels_ == i][..., i].max())
+#                 ellipsoid_radii = torch.tensor(radii, dtype=torch.float, device='cuda')
 
-                # expand to [num_part, 3]
-                ellipsoid_radii = ellipsoid_radii.unsqueeze(-1).expand(-1, 3)
+#                 # expand to [num_part, 3]
+#                 ellipsoid_radii = ellipsoid_radii.unsqueeze(-1).expand(-1, 3)
+#                 self.max_radii = ellipsoid_radii.mean() * 1.5
+#                 ellipsoid_radii = (ellipsoid_radii - 0.001) / self.max_radii
 
-                self.ellipsoid_radii = nn.Parameter(torch.log(ellipsoid_radii), requires_grad=True)
+#                 # inv sigmoid
+#                 ellipsoid_radii = torch.log(ellipsoid_radii / (1 - ellipsoid_radii))
+
+#                 self.ellipsoid_radii = nn.Parameter(ellipsoid_radii, requires_grad=True)
+                  self.ellipsoid_radii = nn.Parameter(torch.zeros((self.num_part, 3), dtype=torch.float, device='cuda'), requires_grad=True)
         if not self.use_mlp:
-            self.ellipsoid_rotation = torch.randn((self.num_part, 4), dtype=torch.float, device='cuda')
+            self.ellipsoid_rotation = torch.zeros((self.num_part, 4), dtype=torch.float, device='cuda')
             self.ellipsoid_rotation[:, 0] = 1.0
             self.ellipsoid_rotation = nn.Parameter(self.ellipsoid_rotation, requires_grad=True)
         # add to optimizer
-        self.optimizer_rigid.add_param_group({"params": self.ellipsoid_center_point, "lr": 0.0001})
+        self.optimizer_rigid.add_param_group({"params": self.ellipsoid_center_point, "lr": 0.01})
         if not self.use_mlp:
-            self.optimizer_rigid.add_param_group({"params": self.ellipsoid_radii, "lr": 0.001})
-            self.optimizer_rigid.add_param_group({"params": self.ellipsoid_rotation, "lr": 0.0001})
+            self.optimizer_rigid.add_param_group({"params": self.ellipsoid_radii, "lr": 0.01})
+            self.optimizer_rigid.add_param_group({"params": self.ellipsoid_rotation, "lr": 0.01})
         self.ellipsoid_inited = torch.tensor(True)
 
     def ellipsoid(self, points, rotation, translation):
@@ -293,14 +376,15 @@ class GaussianDeformer(nn.Module):
         # rotation = general_utils.build_rotation(self.ellipsoid_rotation)
         # rotation: [num_part, 3, 3]
         # build radii matrix [num_part, 3, 3]
-        radii = torch.exp(self.ellipsoid_radii)
+        radii = self.min_radii + torch.sigmoid(self.ellipsoid_radii) * self.max_radii
+        # print(self.max_radii)
+        # print(radii)
         # radii = torch.clamp(radii, min=0.001, max=0.25)
         L = torch.zeros((radii.size(0), 3, 3), dtype=torch.float, device="cuda")
         L[:, 0, 0] = radii[:, 0]
         L[:, 1, 1] = radii[:, 1]
         L[:, 2, 2] = radii[:, 2]
-        L = L
-        rotation = rotation
+        l = L
         L = rotation @ L
         cov = L @ L.transpose(-1, -2)
         cov_inv = torch.inverse(cov)
@@ -313,7 +397,7 @@ class GaussianDeformer(nn.Module):
         # small distance has large weight
         dis = dis.squeeze(-1).squeeze(-1)
         W = dis
-        return W, L
+        return W, l
         # dist = torch.cdist(points, translation, 2)
         # W = torch.exp(-dist ** 2 / (2 * torch.exp(self.ellipsoid_radii) ** 2))
         # return W
@@ -392,8 +476,10 @@ class GaussianDeformer(nn.Module):
             if delta_mlp:
                 f = torch.cat([self.point_embedding(points), self.rest_pose.unsqueeze(0).expand(points.size(0), -1)], dim=-1)
                 add_weights = self.weight_mlp(f)
-                weights = weights + add_weights
+                weights = 1 * weights + add_weights
             weights = torch.softmax(-10 * self.log_scale.exp() * weights, dim=-1)
+
+
 
             # build 4x4 transformation matrix
             transformation = torch.zeros((self.num_part, 4, 4), device='cuda')
@@ -417,7 +503,7 @@ class GaussianDeformer(nn.Module):
                 if delta_mlp:
                     f = torch.cat([self.point_embedding(transformed_points), joints.unsqueeze(0).expand(points.size(0), -1)], dim=-1)
                     add_weights_inverse = self.weight_mlp(f)
-                    weights_inverse = weights_inverse + add_weights_inverse
+                    weights_inverse = 1 * weights_inverse + add_weights_inverse
                 weights_inverse = torch.softmax(-10 * self.log_scale.exp() * weights_inverse, dim=-1)
                 inv_local_points = transformed_points.unsqueeze(1) - translation_obs.unsqueeze(0)
                 inv_local_points_rotated = rotation_inv @ inv_local_points.unsqueeze(-1)
@@ -428,13 +514,13 @@ class GaussianDeformer(nn.Module):
                 cycle_loss = F.mse_loss(inverse_points, points)
 
         # print(prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=-1))
-        return transformed_points, fwd, translation_obs, rotation_obs, L, cycle_loss if self.training else None
+        return transformed_points, fwd, translation_obs, rotation_obs, L, cycle_loss if self.training else None, weights
 
 
     def ellipsoid_volume_loss(self):
         # all ellipsoid should have comparable volume
         # compute the volume of each ellipsoid
-        radii = torch.exp(self.ellipsoid_radii)
+        radii = self.min_radii + torch.sigmoid(self.ellipsoid_radii) * self.max_radii
         a1 = radii[:, 0]
         a2 = radii[:, 1]
         a3 = radii[:, 2]

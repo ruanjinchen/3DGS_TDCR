@@ -88,9 +88,10 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
 
     if deformer is not None:
         xyz_can = means3D
-        means3D, fwd, bone_translation_obs, bone_rotation_obs, L, cycle_loss = deformer(means3D, joints, add_mlp)
+        means3D, fwd, bone_translation_obs, bone_rotation_obs, L, cycle_loss, weights = deformer(means3D, joints, add_mlp)
         xyz_obs = means3D
         _, center_can = deformer.get_canonical()
+
 
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
@@ -109,12 +110,29 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
 
     # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
     # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
+    # part_color = torch.tensor([[1.0, 0.0, 0.0],
+    #                             [0.0, 1.0, 0.0],
+    #                             [0.0, 0.0, 1.0],
+    #                             [1.0, 1.0, 0.0],
+    #                             [1.0, 0.0, 1.0],
+    #                             [0.0, 1.0, 1.0],
+    #                             [1.0, 0.5, 0],
+    #                             [1.0, 0.75, 0.8]], device=means3D.device)
+    # # color as a weighted sum of part colors
+    # override_color = torch.sum(weights.unsqueeze(-1) * part_color, dim=1)
+    # # for color value smaller than 1e-6, set it to 0
+    # override_color[override_color < 1e-6] = 0.0
+
     shs = None
     colors_precomp = None
     if override_color is None:
-        if pipe.convert_SHs_python:
+        if pipe.convert_SHs_python and fwd is not None:
+            camera_center = viewpoint_camera.camera_center
+            # camera_center = fwd[:, :3, :3].transpose(-1, -2) @ camera_center.unsqueeze(0).unsqueeze(-1)
             shs_view = pc.get_features.transpose(1, 2).view(-1, 3, (pc.max_sh_degree+1)**2)
-            dir_pp = (means3D - viewpoint_camera.camera_center.repeat(pc.get_features.shape[0], 1))
+            dir_pp = (means3D - camera_center)
+            dir_pp = fwd[:, :3, :3].transpose(-1, -2) @ dir_pp.unsqueeze(-1)
+            dir_pp = dir_pp.squeeze(-1)
             dir_pp_normalized = dir_pp/dir_pp.norm(dim=1, keepdim=True)
             sh2rgb = eval_sh(pc.active_sh_degree, shs_view, dir_pp_normalized)
             colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
@@ -124,7 +142,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         colors_precomp = override_color
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
-    rendered_image, radii = rasterizer(
+    rendered_image, radii, depth, mask = rasterizer(
         means3D = means3D,
         means2D = means2D,
         shs = shs,
@@ -133,25 +151,40 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         scales = scales,
         rotations = rotations,
         cov3D_precomp = cov3D_precomp)
+    torchvision.utils.save_image(rendered_image, "rendered.png")
+    # torchvision.utils.save_image(mask, "mask3.png")
 
-    if render_mask:
-        mask, _ = rasterizer(
-            means3D = means3D,
-            means2D = means2D,
-            shs = None,
-            colors_precomp = torch.ones(opacity.shape[0], 3, device=opacity.device),
-            opacities = opacity,
-            scales = scales,
-            rotations = rotations,
-            cov3D_precomp = cov3D_precomp
-        )
-        mask = mask[:1]
+    # if render_mask:
+    #     mask_img, _, _, m = rasterizer(
+    #         means3D = means3D,
+    #         means2D = means2D,
+    #         shs = None,
+    #         colors_precomp = torch.ones(opacity.shape[0], 3, device=opacity.device),
+    #         opacities = opacity,
+    #         scales = scales,
+    #         rotations = rotations,
+    #         cov3D_precomp = cov3D_precomp
+    #     )
+    #     # convert to binary mask
+    #     mask_img = mask_img[:1]
+    #     torchvision.utils.save_image(mask_img.squeeze(0), "mask.png")
+    #     torchvision.utils.save_image(m.squeeze(0), "mask2.png")
 
-    if render_bone:
+    bone_mask = None
+
+    if render_bone and deformer is not None:
         cov3D = bone_rotation_obs @ L @ L.transpose(-1, -2) @ bone_rotation_obs.transpose(-1, -2)
         cov3D = strip_symmetric(cov3D.squeeze(0))
-        colors_precomp = torch.ones(bone_translation_obs.shape[0], 3, device=bone_translation_obs.device)
-        rendered_image_bone, _ = rasterizer(
+        # colors_precomp = torch.ones(bone_translation_obs.shape[0], 3, device=bone_translation_obs.device)
+        colors_precomp = torch.tensor([[1.0, 0.0, 0.0],
+                                       [0.0, 1.0, 0.0],
+                                       [0.0, 0.0, 1.0],
+                                       [1.0, 1.0, 0.0],
+                                       [1.0, 0.0, 1.0],
+                                       [0.0, 1.0, 1.0],
+                                       [1.0, 0.5, 0],
+                                       [1.0, 0.75, 0.8]], device=bone_translation_obs.device)
+        bone_render, _, _, bone_mask = rasterizer(
             means3D = bone_translation_obs,
             means2D = torch.zeros_like(bone_translation_obs, device=bone_translation_obs.device),
             shs = None,
@@ -161,14 +194,15 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             rotations = None,
             cov3D_precomp = cov3D
         )
-        rendered_image_bone = rendered_image_bone[:1]
-        # save the bone image
-        torchvision.utils.save_image(rendered_image_bone, "bone.png")
+
+        torchvision.utils.save_image(bone_render, "bone.png")
+
+
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
 
-    return {"render": rendered_image,
+    return {"renders": rendered_image,
             "viewspace_points": screenspace_points,
             "visibility_filter" : radii > 0,
             "radii": radii,
@@ -182,5 +216,47 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             "rotation_can": rotation_can if deformer is not None else None,
             "rotation_obs": rotation_obs if deformer is not None else None,
             "cycle_loss": cycle_loss if deformer is not None else None,
-            "bone": rendered_image_bone if render_bone else None}
+            "bone": bone_mask if render_bone else None,
+            "weights": weights if deformer is not None else None}
 
+
+def render_obstacle(viewpoint_camera, pipe, bg_color, position, radius, color):
+    tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
+    tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
+
+    raster_settings = GaussianRasterizationSettings(
+        image_height=int(viewpoint_camera.image_height),
+        image_width=int(viewpoint_camera.image_width),
+        tanfovx=tanfovx,
+        tanfovy=tanfovy,
+        bg=bg_color,
+        scale_modifier=1.0,
+        viewmatrix=viewpoint_camera.world_view_transform,
+        projmatrix=viewpoint_camera.full_proj_transform,
+        sh_degree=16,
+        campos=viewpoint_camera.camera_center,
+        prefiltered=False,
+        debug=pipe.debug
+    )
+
+    rasterizer = GaussianRasterizer(raster_settings=raster_settings)
+
+    rotation = torch.eye(3, device=position.device).unsqueeze(0).repeat(position.shape[0], 1, 1) # [N, 3, 3]
+    L = torch.eye(3, device=position.device).unsqueeze(0).repeat(position.shape[0], 1, 1) # [N, 3, 3]
+    L[:, 0, 0] = radius[:, 0]
+    L[:, 1, 1] = radius[:, 1]
+    L[:, 2, 2] = radius[:, 2]
+    cov3D = rotation @ L @ L.transpose(-1, -2) @ rotation.transpose(-1, -2)
+    cov3D = strip_symmetric(cov3D)
+    colors_precomp = torch.tensor([color], device=position.device, dtype=torch.float)
+    rendered_image, _, _, mask = rasterizer(
+        means3D = position,
+        means2D = torch.zeros_like(position, device=position.device),
+        shs = None,
+        colors_precomp = colors_precomp,
+        opacities = torch.ones(position.shape[0], device=position.device).unsqueeze(1),
+        scales = None,
+        rotations = None,
+        cov3D_precomp = cov3D
+    )
+    return rendered_image

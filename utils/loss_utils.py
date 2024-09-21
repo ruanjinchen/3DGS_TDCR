@@ -64,23 +64,38 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
         return ssim_map.mean(1).mean(1).mean(1)
 
 
-def aiap_loss(xyz_can, xyz_obs, cov_can, cov_obs, rotation_can, rotation_obs, n_neighbors=11):
-    _, index, _ = knn_points(xyz_can.unsqueeze(0), xyz_can.unsqueeze(0), K=n_neighbors, return_sorted=True)
+def aiap_loss(xyz_can, xyz_obs, cov_can, cov_obs, rotation_can, rotation_obs, weights, n_neighbors=51):
+    dist, index, _ = knn_points(xyz_can.unsqueeze(0), xyz_can.unsqueeze(0), K=n_neighbors, return_sorted=True)
     index = index.squeeze(0)
-    rigid_loss, rot_loss = _rigid_loss(xyz_can, xyz_obs, rotation_can, rotation_obs, n_neighbors, index)
-    return _aiap_loss(xyz_can, xyz_obs, index=index), _aiap_loss(cov_can, cov_obs, index=index), rigid_loss, rot_loss
+    dist = dist.squeeze(0)
+    rigid_loss, rot_loss = _rigid_loss(xyz_can, xyz_obs, rotation_can, rotation_obs, n_neighbors, index, dist)
+    return _aiap_loss(xyz_can, xyz_obs, index=index), _aiap_loss(cov_can, cov_obs, index=index), rigid_loss, rot_loss, smooth_loss(weights, index=index)
 
-def _aiap_loss(x_canonical, x_deformed, n_neighbors=6, index=None):
+def sparse_loss(weights):
+
+    loss = weights * torch.log(weights) + (1 - weights) * torch.log(1 - weights)
+    return -loss.mean()
+
+
+def smooth_loss(weights, index=None, n_neighbors=51):
     if index is None:
-        _, index, _ = knn_points(x_canonical.unsqueeze(0), x_canonical.unsqueeze(0), K=n_neighbors, return_sorted=True)
+        dist, index, _ = knn_points(weights.unsqueeze(0), weights.unsqueeze(0), K=6, return_sorted=True)
+        index = index.squeeze(0)
+    near_weights = weights[index][:, 1:]
+    weights = weights.unsqueeze(1).repeat(1, n_neighbors-1, 1)
+    return F.l1_loss(weights, near_weights)
+
+def _aiap_loss(x_canonical, x_deformed, n_neighbors=51, index=None):
+    if index is None:
+        dist, index, _ = knn_points(x_canonical.unsqueeze(0), x_canonical.unsqueeze(0), K=n_neighbors, return_sorted=True)
         index = index.squeeze(0)
     dists_canonical = torch.cdist(x_canonical.unsqueeze(1), x_canonical[index])[:,0,1:]
     dists_deformed = torch.cdist(x_deformed.unsqueeze(1), x_deformed[index])[:,0,1:]
     return F.l1_loss(dists_canonical, dists_deformed)
 
-def _rigid_loss(x_can, x_obs, rotation_can, rotation_obs, n_neighbors, index):
+def _rigid_loss(x_can, x_obs, rotation_can, rotation_obs, n_neighbors, index, dist):
     # weights = exp(2000 * ||x_can - x_can[index]||_2^2)
-    weights = torch.exp(-2000 * torch.norm(x_can.unsqueeze(1) - x_can[index], dim=-1) ** 2)[:, 1:]
+    weights = torch.exp(-2000 * dist)[:, 1:]
     vec_can = x_can[index] - x_can.unsqueeze(1)
     vec_obs = x_obs[index] - x_obs.unsqueeze(1)
     vec_can = vec_can[:, 1:, :]
@@ -88,14 +103,13 @@ def _rigid_loss(x_can, x_obs, rotation_can, rotation_obs, n_neighbors, index):
     r = rotation_obs @ rotation_can.transpose(-1, -2)
     vec_can = r.unsqueeze(1) @ vec_can.unsqueeze(-1)
     vec_can = vec_can.squeeze(-1)
-
-    rigid_loss = torch.sum(weights * torch.norm(vec_obs - vec_can, dim=-1))
+    rigid_loss = torch.sum(weights * torch.nn.functional.l1_loss(vec_can, vec_obs, reduction='none').mean(-1))
     rigid_loss = rigid_loss / ((n_neighbors - 1) * x_can.size(0))
 
     rot_j = r[index]
     rot_j = rot_j[:, 1:]
-    rot_i = r.unsqueeze(1)
-    rot_loss = torch.sum(weights * torch.norm(rot_j - rot_i, dim=(-1, -2)))
+    rot_i = r.unsqueeze(1).repeat(1, n_neighbors - 1, 1, 1)
+    rot_loss = torch.sum(weights * torch.nn.functional.l1_loss(rot_i, rot_j, reduction='none').mean([-1, -2]))
     rot_loss = rot_loss / ((n_neighbors - 1) * x_can.size(0))
 
     return rigid_loss, rot_loss
@@ -105,13 +119,14 @@ def _rigid_loss(x_can, x_obs, rotation_can, rotation_obs, n_neighbors, index):
 
 
 
-def center_loss(center_can, xyz_can, center_obs, xyz_obs, n_neighbors=10):
-    # k = max(n_neighbors, int(xyz_can.size(0)/40))
-    k = 50
-    _, index, _ = knn_points(center_can.unsqueeze(0), xyz_can.unsqueeze(0), K=k, return_sorted=True)
-    index = index.squeeze(0)
+def center_loss(center_obs, sigma=0.04):
+    # center_obs: [N, 3]
+    distance = torch.sum((center_obs[:, None] - center_obs[None]) ** 2, dim=-1)
+    distance = torch.exp(-distance / (2 * sigma ** 2))
+    distance = distance * (1 - torch.eye(center_obs.size(0), device=center_obs.device))
+    loss = torch.sum(distance) / (center_obs.size(0) - 1)
+    return loss
 
-    return _center_loss(center_can, xyz_can, center_obs, xyz_obs, index=index)
 
 def _center_loss(center_can, xyz_can, center_obs, xyz_obs, n_neighbors=11, index=None):
     if index is None:

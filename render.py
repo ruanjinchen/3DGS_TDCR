@@ -39,29 +39,36 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
         view = camera_from_camInfo(view, 1.0, dataset)
         results = render(view, gaussians, pipeline, background, deformer=deformer, render_mask=True, add_mlp=True, render_bone=True)
-        rendering, mask, bone = results["render"], results["mask"], results["bone"]
+        rendering, mask, bone = results["renders"], results["mask"], results["bone"]
         gt = view.original_image[0:3, :, :]
         torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
         torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
         torchvision.utils.save_image(mask.squeeze(0), os.path.join(mask_path, '{0:05d}'.format(idx) + ".png"))
-        torchvision.utils.save_image(bone.squeeze(0), os.path.join(bone_path, '{0:05d}'.format(idx) + ".png"))
+        if bone is not None:
+            torchvision.utils.save_image(bone.squeeze(0), os.path.join(bone_path, '{0:05d}'.format(idx) + ".png"))
 
 
 
 def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool):
     with torch.no_grad():
         gaussians = GaussianModel(dataset.sh_degree)
+
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
-        deformer = GaussianDeformer(dataset.joints, use_mlp=False)
-        deformer.cuda()
-        # if iteration == -1:
-        #     it = searchForMaxIteration(dataset.model_path)
-        # path = os.path.join(dataset.model_path, "chkpnt_{}".format(it)+"pth")
-        path = dataset.model_path + "/chkpnt_" + str(scene.loaded_iter) + ".pth"
-        (model_params, transform_params, transform_opt_params, transform_sch_params, first_iter) = torch.load(
-            path)
-        deformer.load(transform_params)
-        deformer.eval()
+        gaussians.prune(min_opacity=0.005)
+        gaussians.save_ply("./testpc.ply")
+        if scene.loaded_iter > 7000:
+            deformer = GaussianDeformer(dataset.joints, use_mlp=False)
+            deformer.cuda()
+            # if iteration == -1:
+            #     it = searchForMaxIteration(dataset.model_path)
+            # path = os.path.join(dataset.model_path, "chkpnt_{}".format(it)+"pth")
+            path = dataset.model_path + "/chkpnt_" + str(scene.loaded_iter) + ".pth"
+            (model_params, transform_params, transform_opt_params, transform_sch_params, first_iter) = torch.load(
+                path)
+            deformer.load(transform_params)
+            deformer.eval()
+        else:
+            deformer = None
         bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
