@@ -353,3 +353,23 @@ if __name__ == "__main__":
 
     # All done
     print("\nTraining complete.")
+'''
+export CUDA_VISIBLE_DEVICES=0
+python train2.py \
+  -s /data/fllm/code/TDCR-Self-Modeling/sim/3dgs/2m_no_base.zero \
+  -m out_tdcr2_no_base \
+  --joints 6 \
+  --lambda_mask 0.1 \
+  -u 7000
+
+
+python train2.py \
+  -s datasets/tdcr2_selfmodel.all \
+  -m out_tdcr2 \
+  -k out_tdcr2/chkpnt_7000.pth \
+  --joints 6 \
+  --lambda_mask 0.1 \
+  -u 7000 \
+  --iterations 30000
+
+'''
