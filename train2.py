@@ -52,11 +52,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     transform.train()
     gaussians.training_setup(opt)
     if checkpoint:
-        (model_params, transform_params, transform_opt_params, transform_sch_params, first_iter) = torch.load(checkpoint)
+        try:
+            ckpt = torch.load(checkpoint, weights_only=False)
+        except TypeError:
+            # 兼容 PyTorch < 2.6
+            ckpt = torch.load(checkpoint)
+
+        (model_params, transform_params, transform_opt_params, transform_sch_params, first_iter) = ckpt
         gaussians.restore(model_params, opt)
         transform.load(transform_params, transform_opt_params, first_iter > train_until > 0 or train_until == 0)
-        # transform.optimizer_pt.load_state_dict(transform_pt_opt_params)
         transform.scheduler.load_state_dict(transform_sch_params)
+
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -354,22 +360,33 @@ if __name__ == "__main__":
     # All done
     print("\nTraining complete.")
 '''
+第一阶段训练 训练3D高斯 无形变
 export CUDA_VISIBLE_DEVICES=0
 python train2.py \
   -s /data/fllm/code/TDCR-Self-Modeling/sim/3dgs/2m_no_base.zero \
   -m out_tdcr2_no_base \
   --joints 6 \
-  --lambda_mask 0.1 \
+  --lambda_mask 2.0 \
+  --opacity_reset_interval 100000000 \
   -u 7000
 
-
+检查第一阶段效果
+export CUDA_VISIBLE_DEVICES=0
+python render.py \
+  -s /data/fllm/code/TDCR-Self-Modeling/sim/3dgs/2m_no_base.zero \
+  -m out_tdcr2_no_base \
+  --iteration 7000
+  
+第二阶段 学习形变
+export CUDA_VISIBLE_DEVICES=0
 python train2.py \
-  -s datasets/tdcr2_selfmodel.all \
-  -m out_tdcr2 \
-  -k out_tdcr2/chkpnt_7000.pth \
+  -s /data/fllm/code/TDCR-Self-Modeling/sim/3dgs/2m_no_base.all \
+  -m out_tdcr2_no_base \
+  -k out_tdcr2_no_base/chkpnt_7000.pth \
   --joints 6 \
   --lambda_mask 0.1 \
   -u 7000 \
   --iterations 30000
+
 
 '''
