@@ -6,7 +6,6 @@ The dataset can be downloaded from https://pan.baidu.com/s/1hAnDpUJtX0hZL6jsVMOM
 
 Unzip the dataset and put it in the root path of the project.
 
-
 ## Compile Commands
 ### Prepare for H100 and A100
 ```bash
@@ -19,7 +18,32 @@ export CC=/usr/bin/gcc
 export CXX=/usr/bin/g++
 export CUDAHOSTCXX=/usr/bin/g++
 ```
-### diff-gaussian-rasterization
+
+### PyTorch3D
+#### Install
+```bash
+git clone https://github.com/facebookresearch/pytorch3d.git
+cd pytorch3d
+python -m pip install . --no-build-isolation -v
+```
+#### Check
+```bash
+cd ..
+
+python - <<'PY'
+import torch
+import pytorch3d
+from pytorch3d.ops import knn_points
+x = torch.randn(2, 100, 3, device="cuda")
+y = torch.randn(2, 200, 3, device="cuda")
+d, idx, nn = knn_points(x, y, K=3)
+print("pytorch3d ok:", getattr(pytorch3d, "__version__", "no_version"))
+print("knn_points ok:", d.shape, idx.shape)
+PY
+```
+
+
+### Diff-gaussian-rasterization
 #### Compile
 ```bash
 cd install submodules/diff-gaussian-rasterization
