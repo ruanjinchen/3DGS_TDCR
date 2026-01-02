@@ -36,7 +36,8 @@ def load_image(image_path, white_background=False):
     # reconstruct the image to rgba
     arr = np.concatenate((arr, norm_data[:, :, 3:4]), axis=2)
 
-    image = Image.fromarray(np.array(arr * 255.0, dtype=np.byte), "RGBA")
+    arr_u8 = (np.clip(arr, 0.0, 1.0) * 255.0).astype(np.uint8)
+    image = Image.fromarray(arr_u8, mode="RGBA")
 
 
     return image
