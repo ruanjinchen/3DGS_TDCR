@@ -43,7 +43,7 @@ def loadCam(args, id, cam_info, resolution_scale):
 
     if cam_info.image is None:
         image_path = cam_info.image_path
-        image = load_image(image_path)
+        image = load_image(image_path, white_background=args.white_background)
     else:
         image = cam_info.image
     resized_image_rgb = PILtoTorch(image, resolution)
