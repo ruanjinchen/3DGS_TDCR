@@ -1,1 +1,1 @@
-Namespace(sh_degree=3, source_path='/data/fllm/code/TDCR-Self-Modeling/sim/3dgs/2m_no_base.zero', model_path='out_tdcr2_no_base', images='images', resolution=-1, white_background=False, data_device='cpu', eval=False, joints=6, joint_limit=90, size=[400, 400])
+Namespace(sh_degree=3, source_path='/data/fllm/code/TDCR-Self-Modeling/sim/3dgs/2m_no_base.all', model_path='out_tdcr2_no_base', images='images', resolution=-1, white_background=False, data_device='cpu', eval=False, joints=6, joint_limit=90, size=[400, 400])
