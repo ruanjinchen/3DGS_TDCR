@@ -75,7 +75,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
     loss_sum = 0.0
-    scaler = torch.cuda.amp.GradScaler()
+    scaler = torch.amp.GradScaler('cuda')
     for iteration in range(first_iter, opt.iterations + 1):
 
         if iteration > train_until > 0:
