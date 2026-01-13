@@ -195,40 +195,33 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             image, viewspace_point_tensor, visibility_filter, radii = render_pkg["renders"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
             # Loss
-            # Loss (foreground-normalized to avoid background domination)
             gt_image = viewpoint_cam.original_image.cuda()
-            gt_mask = viewpoint_cam.gt_alpha_mask.cuda().float()
-            if gt_mask.dim() == 3:
-                # common: [1,H,W] or [3,H,W]
-                if gt_mask.shape[0] == 1:
-                    gt_mask = gt_mask.squeeze(0)
-                else:
-                    gt_mask = gt_mask[0]
-            gt_mask = gt_mask.clamp(0.0, 1.0)
-
-            # Foreground-normalized L1 over RGB
-            mask3 = gt_mask.unsqueeze(0).repeat(3, 1, 1)
-            fg_sum = mask3.sum().clamp_min(1e-6)
-            Ll1 = (torch.abs(image - gt_image) * mask3).sum() / fg_sum
-
-            # SSIM on masked images can be unstable; consider setting --lambda_dssim 0 for stage-2.
-            if opt.lambda_dssim > 0.0:
-                ssim_fg = ssim(image * mask3, gt_image * mask3)
-                loss = opt.lambda_dssim * (1.0 - ssim_fg) + (1.0 - opt.lambda_dssim) * Ll1
-            else:
-                loss = Ll1
-
+            Ll1 = l1_loss(image, gt_image)
+            loss = opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + (1.0 - opt.lambda_dssim) * Ll1
+            # loss += 0.5 * lpips(image, gt_image, net_type='vgg').squeeze()
             image_loss = loss.item()
             loss_list[index] = image_loss
 
-            # Mask loss (foreground-normalized: collapse-to-zero gives ~1 loss regardless of object size)
+            # loss = Ll1 + ssim(image, gt_image)
+            # use mse loss for mask
             if opt.lambda_mask > 0.0:
                 mask = render_pkg["mask"].squeeze(0)
                 bone = render_pkg["bone"].squeeze(0) if render_pkg["bone"] is not None else None
-                fg = gt_mask.sum().clamp_min(1e-6)
-                mask_loss = torch.abs(mask - gt_mask).sum() / fg
+                gt_mask = viewpoint_cam.gt_alpha_mask.cuda()
+                mask_loss = torch.nn.functional.l1_loss(mask, gt_mask)
                 loss += opt.lambda_mask * mask_loss
                 if bone is not None:
+                    # # transform bone and mask to 2d point cloud
+                    # image_size = torch.tensor([image.shape[1], image.shape[2]], device=image.device)
+                    # # set bone to 0-1
+                    # bone[bone < 0.5] = 0
+                    # torchvision.utils.save_image(bone, "bone.png")
+                    # bone = torch.nonzero(bone).float().unsqueeze(0)
+                    # gt_mask = torch.nonzero(gt_mask).float().unsqueeze(0)
+                    # # scale to 0-1
+                    # bone = bone / image_size
+                    # gt_mask = gt_mask / image_size
+
                     bone_loss = torch.nn.functional.l1_loss(bone, gt_mask)
                     loss += .1 * bone_loss
                     loss += .001 * transform.ellipsoid_volume_loss()
@@ -272,7 +265,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 scene.save(iteration)
 
             # Densification
-            if iteration < opt.densify_until_iter and (train_until == 0 or iteration <= train_until):
+            if iteration < opt.densify_until_iter:
                 # Keep track of max radii in image-space for pruning
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
@@ -286,24 +279,18 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             # Optimizer step
         if iteration < opt.iterations :
-            if train_until == 0:
-                # no staged training: update both gaussians and deformer
+            if train_until == 0 or iteration > train_until:
+                # scaler.step(transform.optimizer_rigid)
                 transform.optimizer_rigid.step()
                 transform.scheduler.step()
+                # print(transform.scheduler.T_max)
                 transform.optimizer_rigid.zero_grad(set_to_none = True)
                 gaussians.optimizer.step()
-                gaussians.optimizer.zero_grad(set_to_none = True)
-            elif iteration > train_until:
-                # stage-2: freeze gaussians, only train deformer
-                transform.optimizer_rigid.step()
-                transform.scheduler.step()
-                transform.optimizer_rigid.zero_grad(set_to_none = True)
-                gaussians.optimizer.zero_grad(set_to_none = True)
+                # scaler.step(gaussians.optimizer)
             else:
-                # stage-1: train gaussians (deformer is not used)
                 gaussians.optimizer.step()
-                gaussians.optimizer.zero_grad(set_to_none = True)
-                transform.optimizer_rigid.zero_grad(set_to_none = True)
+                # scaler.step(gaussians.optimizer)
+            gaussians.optimizer.zero_grad(set_to_none = True)
             # scaler.update()
 
 
@@ -424,8 +411,8 @@ if __name__ == "__main__":
 第一阶段训练 训练3D高斯 无形变
 export CUDA_VISIBLE_DEVICES=0
 python train2.py \
-  -s /data/yxk/J-data/code/TDCR-Self-Modeling/sim/3dgs/2m_with_base.zero \
-  -m sim_tdcr2_with_base \
+  -s /data/fllm/code/TDCR-Self-Modeling/sim/3dgs/2m_no_base.zero \
+  -m out_tdcr2_no_base \
   --joints 6 \
   --lambda_mask 2.0 \
   --opacity_reset_interval 100000000 \
@@ -434,14 +421,14 @@ python train2.py \
 检查第一阶段效果
 export CUDA_VISIBLE_DEVICES=0
 python render.py \
-  -s /data/yxk/J-data/code/TDCR-Self-Modeling/sim/3dgs/2m_no_base.zero \
+  -s /data/fllm/code/TDCR-Self-Modeling/sim/3dgs/2m_no_base.zero \
   -m out_tdcr2_no_base \
   --iteration 7000
   
 第二阶段 学习形变
 export CUDA_VISIBLE_DEVICES=0
 python train2.py \
-  -s /data/yxk/J-data/code/TDCR-Self-Modeling/sim/3dgs/2m_no_base.all \
+  -s /data/fllm/code/TDCR-Self-Modeling/sim/3dgs/2m_no_base.all \
   -m out_tdcr2_no_base_stage2_fix \
   -k out_tdcr2_no_base/chkpnt_7000_stage1_backup.pth \
   --joints 6 \
@@ -449,25 +436,10 @@ python train2.py \
   -u 7000 \
   --iterations 30000
 
-
-export CUDA_VISIBLE_DEVICES=0
-python train2.py \
-  -s /data/yxk/J-data/code/TDCR-Self-Modeling/sim/3dgs/2m_no_base.all \
-  -m out_tdcr2_no_base_stage2_fg \
-  -k out_tdcr2_no_base/chkpnt_7000_stage1_backup.pth \
-  --joints 6 \
-  --lambda_mask 2.0 \
-  --lambda_dssim 0 \
-  -u 7000 \
-  --iterations 30000
-
-
-
-  
 检查第二阶段效果
 export CUDA_VISIBLE_DEVICES=0
 python render.py \
-  -s /data/yxk/J-data/code/TDCR-Self-Modeling/sim/3dgs/2m_no_base.all \
+  -s /data/fllm/code/TDCR-Self-Modeling/sim/3dgs/2m_no_base.all \
   -m out_tdcr2_no_base_stage2_fix \
   --iteration 30000
 
