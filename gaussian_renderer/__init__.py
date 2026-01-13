@@ -91,7 +91,57 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         means3D, fwd, bone_translation_obs, bone_rotation_obs, L, cycle_loss, weights = deformer(means3D, joints, add_mlp)
         xyz_obs = means3D
         _, center_can = deformer.get_canonical()
+        if deformer is not None:
+            with torch.no_grad():
+                # 1) 检查 NaN/Inf
+                # print("DEBUG means3D has nan:", torch.isnan(means3D).any().item(),
+                #     "inf:", torch.isinf(means3D).any().item())
 
+                # 2) 看看点云整体跑到哪了（范围）
+                mn = means3D.min(dim=0).values
+                mx = means3D.max(dim=0).values
+                # print("DEBUG means3D bbox min/max:", mn.tolist(), mx.tolist())
+
+                # 3) 投影到 NDC，看看有多少点在视锥内
+                pts_h = torch.cat([means3D, torch.ones((means3D.shape[0], 1), device=means3D.device)], dim=1)  # [N,4]
+                clip = pts_h @ viewpoint_camera.full_proj_transform  # [N,4]（这个项目里就是这么乘的）
+                w = clip[:, 3]
+                ndc = clip[:, :3] / (w.unsqueeze(1) + 1e-9)
+
+                infront = w > 0
+                infov = (ndc[:, 0].abs() <= 1) & (ndc[:, 1].abs() <= 1)
+                frac = (infront & infov).float().mean().item()
+                # print("DEBUG frac points in front & in fov:", frac)
+
+    # --- Fix: orthonormalize blended rotation to avoid cov collapse (radii==0) ---
+    if fwd is not None:
+        R = fwd[:, :3, :3]  # [N,3,3]
+        eps = 1e-6
+
+        r1 = R[:, :, 0]
+        r2 = R[:, :, 1]
+
+        n1 = torch.linalg.norm(r1, dim=1, keepdim=True)
+        r1 = r1 / (n1 + eps)
+
+        # make r2 orthogonal to r1
+        r2 = r2 - r1 * (r1 * r2).sum(dim=1, keepdim=True)
+        n2 = torch.linalg.norm(r2, dim=1, keepdim=True)
+        r2 = r2 / (n2 + eps)
+
+        r3 = torch.cross(r1, r2, dim=1)
+        n3 = torch.linalg.norm(r3, dim=1, keepdim=True)
+        r3 = r3 / (n3 + eps)
+
+        R_ortho = torch.stack([r1, r2, r3], dim=2)  # [N,3,3]
+
+        # fallback: 极端退化时用单位阵（避免 NaN）
+        bad = (n1.squeeze(1) < 1e-4) | (n2.squeeze(1) < 1e-4) | (n3.squeeze(1) < 1e-4)
+        if bad.any():
+            R_ortho[bad] = torch.eye(3, device=R.device)
+
+        fwd = fwd.clone()
+        fwd[:, :3, :3] = R_ortho
 
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
@@ -151,6 +201,13 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         scales = scales,
         rotations = rotations,
         cov3D_precomp = cov3D_precomp)
+    # print(
+    #     "DEBUG radii>0 frac:",
+    #     (radii > 0).float().mean().item(),
+    #     "radii max:",
+    #     radii.max().item()
+    # )
+
     torchvision.utils.save_image(rendered_image, "rendered.png")
     # torchvision.utils.save_image(mask, "mask3.png")
 
