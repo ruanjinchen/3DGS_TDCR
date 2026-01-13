@@ -63,8 +63,16 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
             #     it = searchForMaxIteration(dataset.model_path)
             # path = os.path.join(dataset.model_path, "chkpnt_{}".format(it)+"pth")
             path = dataset.model_path + "/chkpnt_" + str(scene.loaded_iter) + ".pth"
-            (model_params, transform_params, transform_opt_params, transform_sch_params, first_iter) = torch.load(
-                path)
+            # --- PyTorch 2.6+ compatibility: allow full checkpoint loading ---
+            try:
+                ckpt = torch.load(path, weights_only=False)
+            except TypeError:
+                # PyTorch < 2.6 doesn't have weights_only argument
+                ckpt = torch.load(path)
+
+            (model_params, transform_params, transform_opt_params, transform_sch_params, first_iter) = ckpt
+            deformer.load(transform_params)
+
             deformer.load(transform_params)
             deformer.eval()
         else:
