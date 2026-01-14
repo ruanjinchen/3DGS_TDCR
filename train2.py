@@ -421,11 +421,13 @@ if __name__ == "__main__":
     # All done
     print("\nTraining complete.")
 '''
+
+/data/yxk/K-data/K/dgllm/out_tdcr2_no_base
 第一阶段训练 训练3D高斯 无形变
 export CUDA_VISIBLE_DEVICES=0
 python train2.py \
-  -s /data/yxk/J-data/code/TDCR-Self-Modeling/sim/3dgs/2m_with_base.zero \
-  -m sim_tdcr2_with_base \
+  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_no_base.zero \
+  -m sim_tdcr2_no_base \
   --joints 6 \
   --lambda_mask 2.0 \
   --opacity_reset_interval 100000000 \
@@ -434,14 +436,14 @@ python train2.py \
 检查第一阶段效果
 export CUDA_VISIBLE_DEVICES=0
 python render.py \
-  -s /data/yxk/J-data/code/TDCR-Self-Modeling/sim/3dgs/2m_no_base.zero \
+  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_no_base.zero \
   -m out_tdcr2_no_base \
   --iteration 7000
   
 第二阶段 学习形变
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=3
 python train2.py \
-  -s /data/yxk/J-data/code/TDCR-Self-Modeling/sim/3dgs/2m_no_base.all \
+  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_no_base.all \
   -m out_tdcr2_no_base_stage2_fix \
   -k out_tdcr2_no_base/chkpnt_7000_stage1_backup.pth \
   --joints 6 \
@@ -450,10 +452,10 @@ python train2.py \
   --iterations 30000
 
 
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=3
 python train2.py \
-  -s /data/yxk/J-data/code/TDCR-Self-Modeling/sim/3dgs/2m_no_base.all \
-  -m out_tdcr2_no_base_stage2_fg \
+  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_no_base.all \
+  -m out_tdcr2_no_base_stage2 \
   -k out_tdcr2_no_base/chkpnt_7000_stage1_backup.pth \
   --joints 6 \
   --lambda_mask 2.0 \
@@ -467,10 +469,15 @@ python train2.py \
 检查第二阶段效果
 export CUDA_VISIBLE_DEVICES=0
 python render.py \
-  -s /data/yxk/J-data/code/TDCR-Self-Modeling/sim/3dgs/2m_no_base.all \
+  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_no_base.all \
   -m out_tdcr2_no_base_stage2_fix \
   --iteration 30000
 
+export CUDA_VISIBLE_DEVICES=3
+python render.py \
+  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_no_base.all \
+  -m out_tdcr2_no_base_stage2 \
+  --iteration 30000
 
 
 

@@ -1,0 +1,100 @@
+'''
+-------------------------------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------SIM 2 no base----------------------------------------------------
+-------------------------------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------------------------------
+
+第一阶段训练 训练3D高斯 无形变
+export CUDA_VISIBLE_DEVICES=0
+python train2.py \
+  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_no_base.zero \
+  -m out_tdcr2_no_base \
+  --joints 6 \
+  --lambda_mask 2.0 \
+  --opacity_reset_interval 100000000 \
+  -u 7000
+
+检查第一阶段效果
+export CUDA_VISIBLE_DEVICES=5
+python render.py \
+  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_no_base.zero \
+  -m out_tdcr2_no_base \
+  --iteration 7000
+
+  
+cp out_tdcr2_no_base/chkpnt_7000.pth out_tdcr2_no_base/chkpnt_7000_stage1_backup.pth
+
+第二阶段 学习形变
+export CUDA_VISIBLE_DEVICES=3
+python train2.py \
+  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_no_base.all \
+  -m out_tdcr2_no_base_stage2 \
+  -k out_tdcr2_no_base/chkpnt_7000_stage1_backup.pth \
+  --joints 6 \
+  --lambda_mask 2.0 \
+  --lambda_dssim 0 \
+  -u 7000 \
+  --iterations 30000
+ 
+检查第二阶段效果
+export CUDA_VISIBLE_DEVICES=3
+python render.py \
+  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_no_base.all \
+  -m out_tdcr2_no_base_stage2 \
+  --iteration 30000 \
+  --eval \
+  --skip_train
+
+
+
+  
+-------------------------------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------SIM 2 with base--------------------------------------------------
+-------------------------------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------------------------------
+
+第一阶段训练 训练3D高斯 无形变
+export CUDA_VISIBLE_DEVICES=5
+python train2.py \
+  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_with_base.zero \
+  -m out_tdcr2_with_base \
+  --joints 6 \
+  --lambda_mask 2.0 \
+  --opacity_reset_interval 100000000 \
+  -u 7000
+
+
+检查第一阶段效果
+export CUDA_VISIBLE_DEVICES=5
+python render.py \
+  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_with_base.zero \
+  -m out_tdcr2_with_base \
+  --iteration 7000
+  
+cp out_tdcr2_with_base/chkpnt_7000.pth out_tdcr2_with_base/chkpnt_7000_stage1_backup.pth
+
+第二阶段 学习形变
+export CUDA_VISIBLE_DEVICES=5
+python train2.py \
+  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_with_base.all \
+  -m out_tdcr2_with_base_stage2 \
+  -k out_tdcr2_with_base/chkpnt_7000_stage1_backup.pth \
+  --joints 6 \
+  --lambda_mask 2.0 \
+  --lambda_dssim 0 \
+  -u 7000 \
+  --iterations 30000
+ 
+检查第二阶段效果
+export CUDA_VISIBLE_DEVICES=5
+python render.py \
+  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_with_base.all \
+  -m out_tdcr2_with_base_stage2 \
+  --iteration 30000
+
+
+
+
+'''
