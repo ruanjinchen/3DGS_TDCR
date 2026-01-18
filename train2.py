@@ -395,7 +395,7 @@ if __name__ == "__main__":
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
     parser.add_argument('--ip', type=str, default="127.0.0.1")
-    parser.add_argument('--port', type=int, default=6009)
+    parser.add_argument('--port', type=int, default=7009)
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 12_000, 30_000, 60_000, 90_000, 120_000, 150_000, 200_000, 250_000, 300_000, 350_000, 400_000, 450_000, 500_000, 550_000, 600_000])
@@ -420,66 +420,3 @@ if __name__ == "__main__":
 
     # All done
     print("\nTraining complete.")
-'''
-
-/data/yxk/K-data/K/dgllm/out_tdcr2_no_base
-第一阶段训练 训练3D高斯 无形变
-export CUDA_VISIBLE_DEVICES=0
-python train2.py \
-  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_no_base.zero \
-  -m sim_tdcr2_no_base \
-  --joints 6 \
-  --lambda_mask 2.0 \
-  --opacity_reset_interval 100000000 \
-  -u 7000
-
-检查第一阶段效果
-export CUDA_VISIBLE_DEVICES=0
-python render.py \
-  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_no_base.zero \
-  -m out_tdcr2_no_base \
-  --iteration 7000
-  
-第二阶段 学习形变
-export CUDA_VISIBLE_DEVICES=3
-python train2.py \
-  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_no_base.all \
-  -m out_tdcr2_no_base_stage2_fix \
-  -k out_tdcr2_no_base/chkpnt_7000_stage1_backup.pth \
-  --joints 6 \
-  --lambda_mask 0.1 \
-  -u 7000 \
-  --iterations 30000
-
-
-export CUDA_VISIBLE_DEVICES=3
-python train2.py \
-  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_no_base.all \
-  -m out_tdcr2_no_base_stage2 \
-  -k out_tdcr2_no_base/chkpnt_7000_stage1_backup.pth \
-  --joints 6 \
-  --lambda_mask 2.0 \
-  --lambda_dssim 0 \
-  -u 7000 \
-  --iterations 30000
-
-
-
-  
-检查第二阶段效果
-export CUDA_VISIBLE_DEVICES=0
-python render.py \
-  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_no_base.all \
-  -m out_tdcr2_no_base_stage2_fix \
-  --iteration 30000
-
-export CUDA_VISIBLE_DEVICES=3
-python render.py \
-  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_no_base.all \
-  -m out_tdcr2_no_base_stage2 \
-  --iteration 30000
-
-
-
-
-'''
