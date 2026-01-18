@@ -9,6 +9,8 @@ screenshots
 *.pth
 *.pt
 *.ckpt
-*.ply
+testpc.ply
+rendered.png
+bone.png
 out_*/
 **/out_*/
