@@ -329,12 +329,34 @@ def readCamerasFromRealDataInfos(path, infofile, white_background, size, extensi
 def readRealDataInfo(mixpath, images, eval, llffhold=8):
     path = mixpath.split(".")[0]
     joint_type = mixpath.split(".")[1]
+    train_info = f"info_{joint_type}_train.json"
+    val_info = f"info_{joint_type}_val.json"
+    test_info = f"info_{joint_type}_test.json"
+
     print("Reading Training Transforms")
-    train_cam_infos = readCamerasFromRealDataInfos(path, "info_" + joint_type + "_train.json", False, (640, 480), ".png")
+    train_cam_infos = readCamerasFromRealDataInfos(path, train_info, False, (640, 480), ".png")
+
+    # ✅ IMPORTANT:
+    #   Previously this loader always read *_train.json for BOTH train/test.
+    #   That made `--eval` a fake test (it was still train).
+    #
+    #   New behavior:
+    #     - if --eval: prefer *_test.json, fallback to *_val.json, else empty test.
+    #     - if not --eval: keep test empty (respect explicit split; avoids leakage).
     print("Reading Test Transforms")
-    test_cam_infos = readCamerasFromRealDataInfos(path, "info_" + joint_type + "_train.json", False, (640, 480), ".png")
-    if not eval:
-        train_cam_infos.extend(test_cam_infos)
+    if eval:
+        test_path = os.path.join(path, test_info)
+        if os.path.exists(test_path):
+            test_cam_infos = readCamerasFromRealDataInfos(path, test_info, False, (640, 480), ".png")
+        else:
+            val_path = os.path.join(path, val_info)
+            if os.path.exists(val_path):
+                print(f"[WARN] {test_info} not found. Falling back to {val_info} for eval.")
+                test_cam_infos = readCamerasFromRealDataInfos(path, val_info, False, (640, 480), ".png")
+            else:
+                print(f"[WARN] Neither {test_info} nor {val_info} found. Eval test set will be empty.")
+                test_cam_infos = []
+    else:
         test_cam_infos = []
 
     nerf_normalization = getNerfppNorm(train_cam_infos)
