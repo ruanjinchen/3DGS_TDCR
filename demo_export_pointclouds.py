@@ -14,6 +14,15 @@
         并用 checkpoint 的 GaussianDeformer 在每个 joint 配置下做前向变形，输出变形后的中心点。
         颜色使用 SH 的 DC 项（view-independent）：rgb = f_dc*C0 + 0.5。
 
+新增：统一“最终保存点数”的下采样
+--------------------------------
+你可以通过 --final_num_points 指定 GT 和 Pred *最终保存* 的点数 N。
+- 该下采样发生在每帧的 GT/PRED 点云都生成出来之后（即写 ply 之前）。
+- 这是一个全局 N：每一帧都会被随机无放回下采样到 N。
+- 约束：
+  - 若任意帧 GT 点数 < N -> 直接报错
+  - 若 Pred（opacity 过滤 + 可选 max_points 预裁剪后）点数 < N -> 直接报错
+
 说明：
 - 该脚本默认会按 opacity(sigmoid(opacity_param)) 过滤掉低 opacity 的 Gaussians。
 - 你提到可能存在“scale 不一致”。在这个 repo/数据管线里，3DGS 初始化 points3D.txt 通常来自 GT 点云，
@@ -27,7 +36,7 @@ python demo_export_pointclouds.py \
   --gt_pcd_dir /data/yxk/K-data/K/fllm-sm/sim/2m_no_base/pointcloud \
   --out_root demo_out/2m_no_base \
   --opacity_thresh 0.005 \
-  --align none
+  --final_num_points 50000
 
 如果想自动估计尺度并对 pred 做统一缩放（参考一帧）：
   --align scale
@@ -42,7 +51,6 @@ python demo_export_pointclouds.py \
 from __future__ import annotations
 
 import json
-import os
 import re
 from argparse import ArgumentParser
 from pathlib import Path
@@ -84,6 +92,7 @@ def _parse_sid_from_any_string(s: str) -> Optional[int]:
     如果用 re.search 会误把 cam0 里的 0 当成 sid。
     因此这里取“最后一段连续数字”作为 sid。
     """
+
     nums = re.findall(r"(\d+)", s)
     if not nums:
         return None
@@ -92,6 +101,7 @@ def _parse_sid_from_any_string(s: str) -> Optional[int]:
 
 def read_frame_ids(dataset_root: Path) -> List[int]:
     """读取 make_selfmodel_gs_dataset.py 写出的 frame_ids.txt（每行一个 6 位 sid）。"""
+
     f = dataset_root / "frame_ids.txt"
     if not f.exists():
         raise FileNotFoundError(f"找不到 {f}（你的数据集是否由 make_selfmodel_gs_dataset.py 导出？）")
@@ -107,6 +117,7 @@ def read_frame_ids(dataset_root: Path) -> List[int]:
 
 def read_joint_txt(dataset_root: Path) -> np.ndarray:
     """读取 joint.txt（每行形如 [0.1 0.2 ...]），返回 (N, D) float32。"""
+
     f = dataset_root / "joint.txt"
     if not f.exists():
         raise FileNotFoundError(f"找不到 {f}")
@@ -131,6 +142,7 @@ def read_sids_from_info_json(info_json: Path) -> List[int]:
     说明：info json 里的 images 会包含多相机，因此同一个 sid 会出现多次。
     这里会去重并按数值排序返回。
     """
+
     if not info_json.exists():
         raise FileNotFoundError(f"找不到 {info_json}")
 
@@ -156,6 +168,7 @@ def read_frame_ids_by_split(dataset_root: Path, split: str) -> List[int]:
     - train/val/test : info_all_<split>.json
     - zero : info_zero_train.json（通常只有一帧）
     """
+
     split = split.lower()
     if split == "all":
         return read_frame_ids(dataset_root)
@@ -168,6 +181,7 @@ def read_frame_ids_by_split(dataset_root: Path, split: str) -> List[int]:
 
 def parse_zero_sid_from_info(dataset_root: Path) -> Optional[int]:
     """尝试从 info_zero_train.json 的 image name 中解析 zero_sid。"""
+
     p = dataset_root / "info_zero_train.json"
     if not p.exists():
         return None
@@ -194,6 +208,7 @@ def load_gaussians_from_pointcloud_ply(ply_path: Path) -> Tuple[np.ndarray, np.n
 
     只读取我们导出点云需要的字段，避免依赖 GaussianModel/simple_knn 等编译扩展。
     """
+
     if PlyData is None:
         raise ImportError("缺少 plyfile：pip install plyfile")
     if not ply_path.exists():
@@ -221,6 +236,7 @@ def rgb_from_fdc_uint8(f_dc: np.ndarray) -> np.ndarray:
     - f_dc 存的是 (rgb-0.5)/C0
     - 所以 rgb = f_dc*C0 + 0.5
     """
+
     rgb = f_dc * float(C0) + 0.5
     rgb = np.clip(rgb, 0.0, 1.0)
     rgb_u8 = (rgb * 255.0 + 0.5).astype(np.uint8)
@@ -229,6 +245,7 @@ def rgb_from_fdc_uint8(f_dc: np.ndarray) -> np.ndarray:
 
 def write_ply_xyzrgb_ascii(path: Path, xyz: np.ndarray, rgb_u8: np.ndarray) -> None:
     """写 PLY ascii 1.0：x y z + uchar rgb。"""
+
     assert xyz.shape[0] == rgb_u8.shape[0]
     n = int(xyz.shape[0])
     _ensure_dir(path.parent)
@@ -244,7 +261,9 @@ def write_ply_xyzrgb_ascii(path: Path, xyz: np.ndarray, rgb_u8: np.ndarray) -> N
         f.write("property uchar blue\n")
         f.write("end_header\n")
         for p, c in zip(xyz, rgb_u8):
-            f.write(f"{p[0]:.6f} {p[1]:.6f} {p[2]:.6f} {int(c[0])} {int(c[1])} {int(c[2])}\n")
+            f.write(
+                f"{p[0]:.6f} {p[1]:.6f} {p[2]:.6f} {int(c[0])} {int(c[1])} {int(c[2])}\n"
+            )
 
 
 def load_gt_xyzrgb(gt_ply: Path) -> Tuple[np.ndarray, np.ndarray]:
@@ -252,6 +271,7 @@ def load_gt_xyzrgb(gt_ply: Path) -> Tuple[np.ndarray, np.ndarray]:
 
     优先用 open3d（支持 binary/ascii）；若 open3d 不可用则尝试 plyfile。
     """
+
     if not gt_ply.exists():
         raise FileNotFoundError(f"找不到 GT 点云: {gt_ply}")
 
@@ -301,6 +321,7 @@ def estimate_scale_and_shift(pred_xyz: np.ndarray, gt_xyz: np.ndarray) -> Tuple[
 
     这不是 ICP，只是一个不需要点对应关系的粗对齐。
     """
+
     cp = pred_xyz.mean(axis=0)
     cg = gt_xyz.mean(axis=0)
 
@@ -310,6 +331,34 @@ def estimate_scale_and_shift(pred_xyz: np.ndarray, gt_xyz: np.ndarray) -> Tuple[
     s = rg / rp
     t = cg - cp * s
     return s, t.astype(np.float32)
+
+
+def _subsample_xyzrgb(
+    xyz: np.ndarray,
+    rgb_u8: np.ndarray,
+    n_keep: int,
+    rng: np.random.Generator,
+    *,
+    err_prefix: str,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """随机无放回下采样到 n_keep。
+
+    - 若 n_keep <= 0：原样返回
+    - 若 xyz 点数 < n_keep：抛异常
+    """
+
+    if n_keep <= 0:
+        return xyz, rgb_u8
+
+    n_total = int(xyz.shape[0])
+    if n_total < n_keep:
+        raise RuntimeError(f"{err_prefix} 点数不足：{n_total} < final_num_points={n_keep}")
+
+    if n_total == n_keep:
+        return xyz, rgb_u8
+
+    idx = rng.choice(n_total, size=n_keep, replace=False)
+    return xyz[idx], rgb_u8[idx]
 
 
 def main():
@@ -323,7 +372,7 @@ def main():
     parser.add_argument(
         "--split",
         type=str,
-        default="train",
+        default="test",
         choices=["train", "val", "test", "all", "zero"],
         help=(
             "导出哪一部分数据：train/val/test=按数据集 info_all_<split>.json；"
@@ -334,7 +383,35 @@ def main():
     )
 
     parser.add_argument("--opacity_thresh", type=float, default=0.005, help="过滤低 opacity 的高斯（sigmoid 后阈值）")
-    parser.add_argument("--max_points", type=int, default=-1, help="每帧最多导出多少个点（-1=不限制；会随机子采样）")
+
+    # NOTE: max_points 是“预裁剪”pred canonical 点数（在变形前，且对所有帧一致）。
+    # 如果你只关心最终保存点数，请优先用 --final_num_points。
+    parser.add_argument(
+        "--max_points",
+        type=int,
+        default=-1,
+        help=(
+            "pred 的预裁剪：在变形前对 canonical gaussians 随机子采样到该数量（-1=不限制）。"
+            "该操作发生在 per-frame 变形之前。"
+        ),
+    )
+
+    parser.add_argument(
+        "--final_num_points",
+        type=int,
+        default=-1,
+        help=(
+            "最终保存的 GT 与 Pred 点数（全局 N；-1=不限制）。"
+            "会在每帧 GT/PRED 点云生成完成后、写 ply 之前随机无放回下采样到 N。"
+            "若任意帧 GT 点数或 Pred 点数 < N，则直接报错。"
+        ),
+    )
+    parser.add_argument(
+        "--sample_seed",
+        type=int,
+        default=0,
+        help="随机下采样的种子（影响 --max_points 与 --final_num_points 的随机性）",
+    )
 
     parser.add_argument(
         "--align",
@@ -398,6 +475,14 @@ def main():
 
     print(f"[export] split={args.split} frames={len(export_sids)}")
 
+    # RNG
+    rng = np.random.default_rng(int(args.sample_seed))
+
+    # 最终保存点数
+    final_n = int(args.final_num_points)
+    if final_n == 0:
+        raise ValueError("--final_num_points 不能为 0；请使用 -1（不限制）或正整数")
+
     # 找 iteration
     model_path = Path(args.model_path)
     if args.iteration == -1:
@@ -413,17 +498,35 @@ def main():
     keep = opacity >= float(args.opacity_thresh)
     xyz_can = xyz_can[keep]
     f_dc = f_dc[keep]
-    opacity = opacity[keep]
 
     # color from f_dc
-    rgb_u8 = rgb_from_fdc_uint8(f_dc)
+    rgb_u8_all = rgb_from_fdc_uint8(f_dc)
 
-    # optional subsample (fixed across frames, so pred/gt size更一致)
-    rng = np.random.default_rng(0)
+    # optional pred pre-subsample (fixed across frames)
     if int(args.max_points) > 0 and xyz_can.shape[0] > int(args.max_points):
         idx = rng.choice(xyz_can.shape[0], size=int(args.max_points), replace=False)
         xyz_can = xyz_can[idx]
-        rgb_u8 = rgb_u8[idx]
+        rgb_u8_all = rgb_u8_all[idx]
+
+    # 如果指定了最终点数，做一些更早的 sanity check
+    if final_n > 0:
+        if int(args.max_points) > 0 and int(args.max_points) < final_n:
+            raise ValueError(
+                f"--max_points({int(args.max_points)}) < --final_num_points({final_n})，"
+                "会导致 Pred 预裁剪后点数不足，无法在最终保存阶段下采样到指定点数。"
+            )
+        if int(xyz_can.shape[0]) < final_n:
+            raise RuntimeError(
+                f"Pred 点数不足（opacity 过滤 + 可选 max_points 后）：{int(xyz_can.shape[0])} < final_num_points={final_n}"
+            )
+
+        # 提前检查第一帧 GT（更早给出错误）；仍会在 loop 内逐帧再次检查
+        gt0 = Path(args.gt_pcd_dir) / f"{export_sids[0]:06d}.ply"
+        gt0_xyz, _gt0_rgb = load_gt_xyzrgb(gt0)
+        if int(gt0_xyz.shape[0]) < final_n:
+            raise RuntimeError(
+                f"GT 点数不足（示例帧 sid={export_sids[0]:06d}）：{int(gt0_xyz.shape[0])} < final_num_points={final_n}"
+            )
 
     # load deformer if checkpoint exists
     ckpt_path = model_path / f"chkpnt_{it}.pth"
@@ -511,6 +614,8 @@ def main():
         "num_gaussians_after_opacity_filter": int(xyz_can.shape[0]),
         "opacity_thresh": float(args.opacity_thresh),
         "max_points": int(args.max_points),
+        "final_num_points": int(final_n),
+        "sample_seed": int(args.sample_seed),
         "align": align_mode,
         "align_scale": float(s_align),
         "align_translation": [float(x) for x in t_align.tolist()],
@@ -522,6 +627,13 @@ def main():
         # --- GT ---
         gt_in = Path(args.gt_pcd_dir) / f"{sid:06d}.ply"
         gt_xyz, gt_rgb = load_gt_xyzrgb(gt_in)
+        gt_xyz, gt_rgb = _subsample_xyzrgb(
+            gt_xyz,
+            gt_rgb,
+            final_n,
+            rng,
+            err_prefix=f"[GT sid={sid:06d}]",
+        )
         gt_out = out_gt / f"{sid:06d}.ply"
         write_ply_xyzrgb_ascii(gt_out, gt_xyz, gt_rgb)
 
@@ -537,8 +649,17 @@ def main():
         if align_mode != "none":
             pred_xyz = pred_xyz * float(s_align) + t_align.reshape(1, 3)
 
+        pred_rgb = rgb_u8_all
+        pred_xyz, pred_rgb = _subsample_xyzrgb(
+            pred_xyz,
+            pred_rgb,
+            final_n,
+            rng,
+            err_prefix=f"[Pred sid={sid:06d}]",
+        )
+
         pred_out = out_pred / f"{sid:06d}.ply"
-        write_ply_xyzrgb_ascii(pred_out, pred_xyz, rgb_u8)
+        write_ply_xyzrgb_ascii(pred_out, pred_xyz, pred_rgb)
 
     print("\nDONE.")
     print(f"Exported to: {out_root.resolve()}")
@@ -546,9 +667,7 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 '''
-
 export CUDA_VISIBLE_DEVICES=1
 python demo_export_pointclouds.py \
   -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_no_base.all \
@@ -556,7 +675,37 @@ python demo_export_pointclouds.py \
   --iteration 30000 \
   --gt_pcd_dir /data/yxk/K-data/K/fllm-sm/sim/2m_no_base/pointcloud \
   --out_root demo_out/2m_no_base \
-  --opacity_thresh 0.005
+  --opacity_thresh 0.005 \
+  --final_num_points 20000
 
+export CUDA_VISIBLE_DEVICES=1
+python demo_export_pointclouds.py \
+  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/2m_with_base.all \
+  -m out_tdcr2_with_base_stage2 \
+  --iteration 30000 \
+  --gt_pcd_dir /data/yxk/K-data/K/fllm-sm/sim/2m_with_base/pointcloud \
+  --out_root demo_out/2m_with_base \
+  --opacity_thresh 0.005 \
+  --final_num_points 20000
+
+export CUDA_VISIBLE_DEVICES=4
+python demo_export_pointclouds.py \
+  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/3m_no_base.all \
+  -m out_tdcr3_no_base_stage2 \
+  --iteration 30000 \
+  --gt_pcd_dir /data/yxk/K-data/K/fllm-sm/sim/3m_no_base/pointcloud \
+  --out_root demo_out/3m_no_base \
+  --opacity_thresh 0.005 \
+  --final_num_points 20000
+
+export CUDA_VISIBLE_DEVICES=5
+python demo_export_pointclouds.py \
+  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/3m_with_base.all \
+  -m out_tdcr3_with_base_stage2 \
+  --iteration 30000 \
+  --gt_pcd_dir /data/yxk/K-data/K/fllm-sm/sim/3m_with_base/pointcloud \
+  --out_root demo_out/3m_with_base \
+  --opacity_thresh 0.005 \
+  --final_num_points 20000
 
 '''
