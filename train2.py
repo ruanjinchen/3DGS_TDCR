@@ -10,6 +10,9 @@
 #
 
 import os
+import json
+import time
+from datetime import datetime, timezone
 
 from pytorch3d.loss import chamfer_distance
 import torch
@@ -38,6 +41,37 @@ from F_kinematic import GaussianDeformer
 
 from utils.camera_utils import camera_from_camInfo
 from lpipsPyTorch import lpips
+
+
+def _iso_now_local() -> str:
+    """ISO timestamp with local timezone offset, seconds precision."""
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _append_timing_record(json_path: str, record: dict) -> None:
+    """Append a timing record to json_path.
+
+    The file format is a JSON list of dicts. If the file does not exist or is
+    invalid, it will be created.
+    """
+    os.makedirs(os.path.dirname(json_path) or ".", exist_ok=True)
+    data = []
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                data = [data]
+            if not isinstance(data, list):
+                data = []
+        except Exception:
+            data = []
+    data.append(record)
+
+    tmp_path = json_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp_path, json_path)
 
 
 def _init_deformer_identity(transform: GaussianDeformer) -> None:
@@ -416,7 +450,68 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.train_gaussian_until_iter, args.mlp)
+
+    # -----------------------
+    # Wall-clock timing (run-level)
+    # -----------------------
+    wall_t0 = time.perf_counter()
+    wall_start_iso = _iso_now_local()
+    status = "completed"
+    exc_repr = None
+
+    try:
+        training(
+            lp.extract(args),
+            op.extract(args),
+            pp.extract(args),
+            args.test_iterations,
+            args.save_iterations,
+            args.checkpoint_iterations,
+            args.start_checkpoint,
+            args.debug_from,
+            args.train_gaussian_until_iter,
+            args.mlp,
+        )
+    except KeyboardInterrupt:
+        status = "interrupted"
+        raise
+    except Exception as e:
+        status = "error"
+        exc_repr = repr(e)
+        raise
+    finally:
+        wall_sec = time.perf_counter() - wall_t0
+        wall_end_iso = _iso_now_local()
+        try:
+            # Ensure output dir exists even if we crash early.
+            if args.model_path:
+                os.makedirs(args.model_path, exist_ok=True)
+            timing_json = os.path.join(args.model_path or ".", "timing.json")
+            record = {
+                "status": status,
+                "start_time": wall_start_iso,
+                "end_time": wall_end_iso,
+                "wall_sec": float(wall_sec),
+                "wall_h": float(wall_sec) / 3600.0,
+                "wall_days": float(wall_sec) / 86400.0,
+                "model_path": args.model_path,
+                "source_path": getattr(args, "source_path", None),
+                "iterations_arg": getattr(args, "iterations", None),
+                "train_gaussian_until_iter": getattr(args, "train_gaussian_until_iter", None),
+                "start_checkpoint": getattr(args, "start_checkpoint", None),
+                "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+                "argv": sys.argv,
+            }
+            if exc_repr is not None:
+                record["exception"] = exc_repr
+            _append_timing_record(timing_json, record)
+            print(
+                f"\n[Timing] Training wall time: {wall_sec:.3f} s "
+                f"({wall_sec/3600.0:.6f} h, {wall_sec/86400.0:.6f} d)"
+            )
+            print(f"[Timing] Saved to: {timing_json}")
+        except Exception as _timing_e:
+            print(f"\n[Timing] Failed to write timing.json: {_timing_e}")
 
     # All done
     print("\nTraining complete.")
