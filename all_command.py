@@ -285,19 +285,20 @@ python render.py \
 
 
 
-
-
 -------------------------------------------------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------------------------------------
 --------------------------------------------------------REAL 2 with base--------------------------------------------------
 -------------------------------------------------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------------------------------------
 
+sed -i 's|/root/autodl-tmp/REAL_2M/gs_dataset|/data/yxk/K-data/K/fllm-sm/sim/3dgs/real_2m_with_base|g' \
+  info_all_train.json info_all_val.json info_zero_train.json info_all_test.json
+
 第一阶段训练 训练3D高斯 无形变
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=1
 python train2.py \
   -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/real_2m_with_base.zero \
-  -m out_real_tdcr2_with_base \
+  -m out_real_tdcr2_with_base_new \
   --joints 6 \
   --lambda_mask 2.0 \
   --opacity_reset_interval 100000000 \
@@ -308,17 +309,17 @@ python train2.py \
 export CUDA_VISIBLE_DEVICES=5
 python render.py \
   -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/real_2m_with_base.zero \
-  -m out_real_tdcr2_with_base \
+  -m out_real_tdcr2_with_base_new \
   --iteration 7000
   
-cp out_real_tdcr2_with_base/chkpnt_7000.pth out_real_tdcr2_with_base/chkpnt_7000_stage1_backup.pth
+cp out_real_tdcr2_with_base_new/chkpnt_7000.pth out_real_tdcr2_with_base_new/chkpnt_7000_stage1_backup.pth
 
 第二阶段 学习形变
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=1
 python train2.py \
   -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/real_2m_with_base.all \
-  -m out_real_tdcr2_with_base_stage2 \
-  -k out_real_tdcr2_with_base/chkpnt_7000_stage1_backup.pth \
+  -m out_real_tdcr2_with_base_stage2_new \
+  -k out_real_tdcr2_with_base_new/chkpnt_7000_stage1_backup.pth \
   --joints 6 \
   --lambda_mask 2.0 \
   --lambda_dssim 0 \
@@ -329,7 +330,7 @@ python train2.py \
 export CUDA_VISIBLE_DEVICES=5
 python render.py \
   -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/real_2m_with_base.all \
-  -m out_real_tdcr2_with_base_stage2 \
+  -m out_real_tdcr2_with_base_stage2_new \
   --iteration 30000
 
 
@@ -341,11 +342,14 @@ python render.py \
 -------------------------------------------------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------------------------------------
 
+sed -i 's|/root/autodl-tmp/REAL_3M/gs_dataset|/data/yxk/K-data/K/fllm-sm/sim/3dgs/real_3m_with_base|g' \
+  info_all_train.json info_all_val.json info_zero_train.json info_all_test.json
+
 第一阶段训练 训练3D高斯 无形变
 export CUDA_VISIBLE_DEVICES=0
 python train2.py \
   -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/real_3m_with_base.zero \
-  -m out_real_tdcr3_with_base \
+  -m out_real_tdcr3_with_base_new \
   --joints 9 \
   --lambda_mask 2.0 \
   --opacity_reset_interval 100000000 \
@@ -356,17 +360,17 @@ python train2.py \
 export CUDA_VISIBLE_DEVICES=0
 python render.py \
   -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/real_3m_with_base.zero \
-  -m out_real_tdcr3_with_base \
+  -m out_real_tdcr3_with_base_new \
   --iteration 7000
   
-cp out_real_tdcr3_with_base/chkpnt_7000.pth out_real_tdcr3_with_base/chkpnt_7000_stage1_backup.pth
+cp out_real_tdcr3_with_base_new/chkpnt_7000.pth out_real_tdcr3_with_base_new/chkpnt_7000_stage1_backup.pth
 
 第二阶段 学习形变
 export CUDA_VISIBLE_DEVICES=1
 python train2.py \
   -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/real_3m_with_base.all \
-  -m out_real_tdcr3_with_base_stage2 \
-  -k out_real_tdcr3_with_base/chkpnt_7000_stage1_backup.pth \
+  -m out_real_tdcr3_with_base_stage2_new \
+  -k out_real_tdcr3_with_base_new/chkpnt_7000_stage1_backup.pth \
   --joints 9 \
   --lambda_mask 2.0 \
   --lambda_dssim 0 \
@@ -377,7 +381,8 @@ python train2.py \
 export CUDA_VISIBLE_DEVICES=0
 python render.py \
   -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/real_3m_with_base.all \
-  -m out_real_tdcr3_with_base_stage2 \
+  -m out_real_tdcr3_with_base_stage2_new \
   --iteration 30000
+
 
 '''

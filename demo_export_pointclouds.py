@@ -708,4 +708,45 @@ python demo_export_pointclouds.py \
   --opacity_thresh 0.005 \
   --final_num_points 20000
 
+export CUDA_VISIBLE_DEVICES=4
+python demo_export_pointclouds.py \
+  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/5m_no_base.all \
+  -m out_tdcr5_no_base_stage2 \
+  --iteration 30000 \
+  --gt_pcd_dir /data/yxk/K-data/K/fllm-sm/sim/5m_no_base/pointcloud \
+  --out_root demo_out/5m_no_base \
+  --opacity_thresh 0.005 \
+  --final_num_points 20000
+
+export CUDA_VISIBLE_DEVICES=5
+python demo_export_pointclouds.py \
+  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/5m_with_base.all \
+  -m out_tdcr5_with_base_stage2 \
+  --iteration 30000 \
+  --gt_pcd_dir /data/yxk/K-data/K/fllm-sm/sim/5m_with_base/pointcloud \
+  --out_root demo_out/5m_with_base \
+  --opacity_thresh 0.005 \
+  --final_num_points 20000
+
+
+export CUDA_VISIBLE_DEVICES=1
+python demo_export_pointclouds.py \
+  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/real_2m_with_base.all \
+  -m out_real_tdcr2_with_base_stage2_new \
+  --iteration 30000 \
+  --gt_pcd_dir /data/yxk/K-data/K/fllm-sm/sim/real_2m_with_base \
+  --out_root demo_out/real_2m_with_base \
+  --opacity_thresh 0.005 \
+  --final_num_points 20000
+
+  
+export CUDA_VISIBLE_DEVICES=2
+python demo_export_pointclouds.py \
+  -s /data/yxk/K-data/K/fllm-sm/sim/3dgs/real_3m_with_base.all \
+  -m out_real_tdcr3_with_base_stage2_new \
+  --iteration 30000 \
+  --gt_pcd_dir /data/yxk/K-data/K/fllm-sm/sim/real_3m_with_base \
+  --out_root demo_out/real_3m_with_base \
+  --opacity_thresh 0.005 \
+  --final_num_points 20000
 '''
